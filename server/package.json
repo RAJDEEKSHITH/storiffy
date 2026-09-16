@@ -1,0 +1,41 @@
+{
+  "name": "server",
+  "version": "1.0.0",
+  "description": "Omnispace backend API",
+  "main": "dist/app.js",
+  "scripts": {
+    "dev": "node --env-file=.env --import=tsx/esm --watch src/app.ts",
+    "start": "node --env-file=.env dist/app.js",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "redis:indexes": "tsx --env-file=.env src/config/redis.indexes.ts",
+    "structure": "node scripts/generate-structure.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "devDependencies": {
+    "@types/bcrypt": "^6.0.0",
+    "@types/cookie-parser": "^1.4.10",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/mongoose": "^5.11.96",
+    "@types/node": "^26.4.1",
+    "@types/redis": "^4.0.10",
+    "tsx": "^4.23.13",
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1132.0",
+    "@aws-sdk/cloudfront-signer": "^3.1125.0",
+    "@aws-sdk/s3-request-presigner": "^3.1132.0",
+    "bcrypt": "^6.0.0",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "mongoose": "^9.10.0",
+    "redis": "^6.2.1",
+    "zod": "^4.6.5"
+  }
+}
