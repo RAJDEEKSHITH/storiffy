@@ -1,40 +1,121 @@
 import mongoose from "mongoose";
-
 import Directory from "../../models/directory.model.js";
 import File from "../../models/file.model.js";
-import User from "../../models/user.model.js";
 import { AppError } from "../../utils/app.error.js";
 
-const generateFolderName = async ( userId: mongoose.Types.ObjectId,
-parentDirectoryId: mongoose.Types.ObjectId,
-) => {
-  const baseName = "New folder";
+// mongoose objectId utility
+const ToMongooseObjectId = (id: string) => new mongoose.Types.ObjectId(id);
 
-  const existingNames = await Directory.find({
+const ensureParentDirectory = async (
+  userId: string,
+  parentDirectoryId: string,
+) => {
+  const directory = await Directory.findOne({
+    _id: parentDirectoryId,
+    userId,
+    deletedAt: null,
+  }).lean();
+  if (!directory) throw new AppError("Parent directory does not exists", 404);
+  return directory;
+};
+
+const makeUniqueDirectoryName = async (
+  userId: string,
+  parentDirectoryId: string,
+  requestedName: string,
+) => {
+  const name = requestedName.trim() || "New Folder";
+  const existingDirectory = await Directory.findOne({
+    userId,
+    name,
+    parentDirectoryId,
+    deletedAt: null,
+  })
+    .select("_id")
+    .lean();
+
+  if (!existingDirectory) return name;
+
+  if (!/^New folder(?: \(\d+\))?$/.test(name)) {
+    throw new AppError("A folder with this name already exists", 409);
+  }
+  const siblingsSimilarDirectoryNames = await Directory.find({
     userId,
     parentDirectoryId,
     deletedAt: null,
-    name: {
-      $regex: `^${baseName}( \\([0-9]+\\))?$`,
-      $options: "i",
-    },
+    name: /^New folder(?: \(\d+\))?$/,
   })
     .select("name")
     .lean();
 
-  const names = new Set(existingNames.map((directory) => directory.name));
+  const names = new Set(siblingsSimilarDirectoryNames.map((item) => item.name));
+  let index = 1;
+  while (names.has(`New folder (${index})`)) index += 1;
+  return `New folder (${index})`;
+};
 
-  if (!names.has(baseName)) {
-    return baseName;
+// create new directory
+export const createDirectory = async (
+  userId: string,
+  parentDirectoryId: string,
+  name: string,
+) => {
+  const parent = await ensureParentDirectory(userId, parentDirectoryId);
+  const directoryName = await makeUniqueDirectoryName(
+    userId,
+    parent._id.toString(),
+    name,
+  );
+  return Directory.create({
+    name: directoryName,
+    parentDirectoryId: parent._id,
+    userId: ToMongooseObjectId(userId),
+    size: 0,
+    deletedAt: null,
+  });
+};
+
+// get breadcrumbs of the current directory
+export const getBreadcrumbs = async ({
+  userId,
+  directoryId
+}: {
+  userId: string;
+  directoryId: string;
+}) => {
+  let current = await Directory.findOne({
+    _id: directoryId,
+    userId,
+    deletedAt: null,
+  }).lean();
+
+  if (!current) {
+    throw new AppError("Directory not found", 404);
   }
 
-  let counter = 1;
+  const breadcrumbs: Array<{
+    id: string;
+    name: string;
+  }> = [];
 
-  while (names.has(`${baseName} (${counter})`)) {
-    counter += 1;
+  while (current) {
+    breadcrumbs.unshift({
+      id: current._id.toString(),
+      name: current.name,
+    });
+
+    if (!current.parentDirectoryId) {
+      break;
+    }
+
+    current = await Directory.findOne({
+      _id: current.parentDirectoryId,
+      userId,
+      deletedAt: null,
+    }).lean();
   }
 
-  return `${baseName} (${counter})`;
+  return breadcrumbs;
 };
 
 export const getDirectoryItems = async (
@@ -48,98 +129,37 @@ export const getDirectoryItems = async (
   }).lean();
 
   if (!directory) {
-    throw new AppError("Directory not found", 404);
+    throw new AppError("Directory Not Found", 404);
   }
 
-  const [files, directories] = await Promise.all([
-    File.find({
-      userId,
-      directoryId: directory._id,
-      deletedAt: null,
-    })
-      .sort({ updatedAt: -1 })
-      .lean(),
-
+  const [directories, files, breadcrumbs] = await Promise.all([
     Directory.find({
-      userId,
       parentDirectoryId: directory._id,
+      userId,
       deletedAt: null,
     })
       .sort({ updatedAt: -1 })
       .lean(),
+    File.find({
+      directoryId: directory._id,
+      userId,
+      deletedAt: null,
+      status: { $in: ["uploading", "ready"] },
+    })
+      .sort({ updatedAt: -1 })
+      .lean(),
+    getBreadcrumbs({userId, directoryId : directory._id.toString()}),
   ]);
 
   return {
     directory,
-    files,
     directories,
+    files,
+    breadcrumbs,
   };
 };
 
-export const createDirectory = async (
-  userId: string,
-  parentDirectoryId: string,
-  requestedName: string,
-) => {
-  const parentDirectory = await Directory.findOne({
-    _id: parentDirectoryId,
-    userId,
-    deletedAt: null,
-  });
-
-  if (!parentDirectory) {
-    throw new AppError("Parent directory not found", 404);
-  }
-
-  const name =
-    requestedName === "New folder"
-      ? await generateFolderName(
-          new mongoose.Types.ObjectId(userId),
-          parentDirectory._id,
-        )
-      : requestedName;
-
-  const existingDirectory = await Directory.findOne({
-    userId,
-    parentDirectoryId: parentDirectory._id,
-    deletedAt: null,
-    name,
-  });
-
-  if (existingDirectory) {
-    throw new AppError(
-      "A folder with this name already exists",
-      409,
-    );
-  }
-
-  return Directory.create({
-    name,
-    parentDirectoryId: parentDirectory._id,
-    userId,
-    size: 0,
-    deletedAt: null,
-  });
-};
-
-const ensureUniqueDirectoryName = async (
-  userId: string,
-  parentDirectoryId: mongoose.Types.ObjectId,
-  name: string,
-  directoryId: mongoose.Types.ObjectId,
-) => {
-  const existingDirectory = await Directory.findOne({
-    userId,
-    parentDirectoryId,
-    deletedAt: null,
-    name,
-    _id: { $ne: directoryId },
-  });
-
-  if (existingDirectory) {
-    throw new AppError("A folder with this name already exists", 409);
-  }
-};
+// rename directory
 
 export const renameDirectory = async (
   userId: string,
@@ -151,103 +171,19 @@ export const renameDirectory = async (
     userId,
     deletedAt: null,
   });
+  if (!directory) throw new AppError("Directory not found", 404);
+  if (directory.parentDirectoryId === null)
+    throw new AppError("Home folder cannot be renamed", 400);
 
-  if (!directory) {
-    throw new AppError("Directory not found", 404);
-  }
-
-  const directoryIdObject = new mongoose.Types.ObjectId(
-    directoryId,
-  );
-
-  if (directory.parentDirectoryId) {
-    await ensureUniqueDirectoryName(
-      userId,
-      directory.parentDirectoryId,
-      name,
-      directoryIdObject,
-    );
-  }
-
-  directory.name = name;
-
-  await directory.save();
-
-  return directory;
-};
-
-export const deleteDirectory = async (userId: string, directoryId: string) => {
-  const user = await User.findById(userId).select("rootDirectoryId");
-
-  if (!user) {
-    throw new AppError("User not found", 404);
-  }
-
-  const directory = await Directory.findOne({
-    _id: directoryId,
+    const duplicate = await Directory.findOne({
+    _id: { $ne: directory._id },
     userId,
+    parentDirectoryId: directory.parentDirectoryId,
     deletedAt: null,
-  });
-
-  if (!directory) {
-    throw new AppError("Directory not found", 404);
-  }
-
-  if (user.rootDirectoryId.equals(directory._id)) {
-    throw new AppError("The root directory cannot be deleted", 400);
-  }
-
-  const deletedAt = new Date();
-
-  const directoryIds: mongoose.Types.ObjectId[] = [directory._id];
-
-  let currentIds = [directory._id];
-
-  while (currentIds.length > 0) {
-    const children = await Directory.find({
-      userId,
-      parentDirectoryId: { $in: currentIds },
-      deletedAt: null,
-    })
-      .select("_id")
-      .lean();
-
-    if (children.length === 0) {
-      break;
-    }
-
-    currentIds = children.map((child) => child._id);
-    directoryIds.push(...currentIds);
-  }
-
-  await Promise.all([
-    Directory.updateMany(
-      {
-        _id: { $in: directoryIds },
-        userId,
-      },
-      {
-        $set: {
-          deletedAt,
-        },
-      },
-    ),
-
-    File.updateMany(
-      {
-        userId,
-        directoryId: { $in: directoryIds },
-        deletedAt: null,
-      },
-      {
-        $set: {
-          deletedAt,
-        },
-      },
-    ),
-  ]);
-
-  directory.deletedAt = deletedAt;
-
-  return directory;
+    name,
+  }).select("_id").lean();
+  if (duplicate) throw new AppError("A folder with this name already exists", 409);
+  directory.name = name;
+  await directory.save();
+  return directory
 };

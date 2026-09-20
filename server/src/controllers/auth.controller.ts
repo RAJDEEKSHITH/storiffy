@@ -2,17 +2,18 @@ import type { NextFunction, Request, Response } from "express";
 
 import {
   loginUserWithEmail,
+  logout,
   registerUserWithEmail,
 } from "../services/auth/auth.service.js";
 
 import {
-  createSession,
-  enforceSessionLimit,
+  deleteSession,
   SESSION_TTL_MS,
 } from "../services/auth/session.service.js";
 
 import UserModel from "../models/user.model.js";
 import { toPublicUser } from "../services/user/user.service.js";
+import { env } from "../config/env.js";
 
 export const register = async (
   req: Request,
@@ -21,15 +22,13 @@ export const register = async (
 ) => {
   try {
     const { name, email, password } = req.body;
-    console.log(req.body);
-    console.log(req.body);
     const user = await registerUserWithEmail({ name, email, password });
     return res.status(201).json({
       success: true,
       message: "user registered successfully",
       data: {
         user: {
-          id: user._id,
+          id: user._id.toString(),
           name: user.name,
           email: user.email,
           role: user.role,
@@ -47,24 +46,11 @@ export const login = async (
   next: NextFunction,
 ) => {
   try {
-    const { email, password } = req.body;
-
-    const user = await loginUserWithEmail({
-      email,
-      password,
-    });
-
-    const userId = user._id.toString();
-
-    // Remove oldest session if user already has 2 active sessions
-    await enforceSessionLimit(userId);
-
-    // Create new session
-    const sessionId = await createSession(userId);
+    const { user, sessionId } = await loginUserWithEmail(req.body);
 
     res.cookie("sessionId", sessionId, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
+      secure: env.NODE_ENV === "production",
       sameSite: "lax",
       maxAge: SESSION_TTL_MS,
       signed: true,
@@ -74,7 +60,7 @@ export const login = async (
       success: true,
       message: "Login successful",
       data: {
-        user: toPublicUser(user)
+        user: toPublicUser(user),
       },
     });
   } catch (error) {
@@ -101,8 +87,27 @@ export const getCurrentUser = async (
     return res.status(200).json({
       success: true,
       data: {
-        user : toPublicUser(user)
+        user: toPublicUser(user),
       },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const logoutUser = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const sessionId = req.signedCookies?.sessionId as string | undefined;
+    if (sessionId) await logout(sessionId);
+    res.clearCookie("sessionId");
+    return res.status(200).json({
+      success: true,
+      message: "Signed out",
+      data: {},
     });
   } catch (error) {
     next(error);

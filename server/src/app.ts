@@ -5,22 +5,23 @@ import cookieParser from "cookie-parser";
 import { connectDB } from "./config/db.js";
 import { connectRedis } from "./config/redis.js";
 
-import authRoutes from "./routes/auth.routes.js";
-import directoryRoutes from "./routes/directory.rotues.js";
+import authRouter from "./routes/auth.routes.js";
+import directoryRouter from "./routes/directory.rotues.js";
+import fileRouter from "./routes/file.routes.js";
 import { errorHandler } from "./middlewares/error.middleware.js";
+import { env } from "./config/env.js";
 
-const COOKIE_SECRET = process.env.COOKIE_SECRET;
 const app = express();
 
 app.use(
   cors({
-    origin: process.env.CLIENT_URLS,
+    origin: env.CLIENT_URLS,
     credentials: true,
   }),
 );
 
 app.use(express.json());
-app.use(cookieParser(COOKIE_SECRET));
+app.use(cookieParser(env.COOKIE_SECRET));
 
 app.get("/api/health", (_req, res) => {
   res.json({
@@ -29,11 +30,12 @@ app.get("/api/health", (_req, res) => {
 });
 
 // auth routes
-app.use("/api/auth", authRoutes);
-app.use("/api/directory", directoryRoutes);
+app.use("/api/auth", authRouter);
+app.use("/api/directories", directoryRouter);
+app.use("/api/files", fileRouter);
 
 app.use(errorHandler);
-const PORT = Number(process.env.PORT) || 4000;
+const PORT = Number(env.PORT) || 4000;
 
 const startServer = async () => {
   try {

@@ -39,7 +39,6 @@ const userSchema = new Schema<UserI>(
       trim: true,
       minlength: 2,
     },
-
     email: {
       type: String,
       required: true,
@@ -52,7 +51,6 @@ const userSchema = new Schema<UserI>(
       type: String,
       default: null,
     },
-
     role: {
       type: String,
       enum: ["user", "manager", "admin"],
@@ -70,13 +68,11 @@ const userSchema = new Schema<UserI>(
       type: String,
       default: "free",
     },
-
     maxStorageLimitInBytes: {
       type: Number,
       required: true,
       default: 1 * 1024 * 1024 * 1024, // 1 GB
     },
-
     storageUsedInBytes: {
       type: Number,
       required: true,
@@ -87,7 +83,6 @@ const userSchema = new Schema<UserI>(
       enum: ["active", "disabled", "deleted"],
       default: "active",
     },
-
     rootDirectoryId: {
       type: Schema.Types.ObjectId,
       ref: "Directory",

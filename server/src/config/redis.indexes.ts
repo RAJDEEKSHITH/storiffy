@@ -7,7 +7,7 @@ const createIndexes = async () => {
   const indexes = await redisClient.ft._list();
 
   if (indexes.includes(INDEX_NAME)) {
-    console.log("Redis indexes already exist");
+    console.log(`Redis index "${INDEX_NAME}" already exists`);
     await redisClient.quit();
     return;
   }
@@ -30,7 +30,7 @@ const createIndexes = async () => {
       PREFIX: "session:",
     },
   );
-  console.log("Redis session index created");
+  console.log(`Redis index "${INDEX_NAME}" created successfully`);
   await redisClient.quit();
 };
 

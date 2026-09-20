@@ -1,11 +1,18 @@
 import { Router } from "express";
 
-import {  
+import {
+  createNewDirectory,
   getDirectory,
+  getDirectoryBreadcrumbs,
+  renameExistingDirectory,
 } from "../controllers/directory.controller.js";
 
-import {authenticate} from "../middlewares/auth.middleware.js";
-import { validateBody, validateParams } from "../middlewares/validate.middleware.js";
+import { authenticate } from "../middlewares/auth.middleware.js";
+
+import {
+  validateBody,
+  validateParams,
+} from "../middlewares/validate.middleware.js";
 
 import {
   createDirectorySchema,
@@ -15,30 +22,24 @@ import {
 
 const router = Router();
 
-router.get( "/", authenticate, getDirectory);
+// Base path: /api/directory
 
-router.get( "/:id", authenticate, validateParams(directoryParamsSchema), getDirectory);
+router.use(authenticate);
 
-// router.post(
-//   "/",
-//   authenticate,
-//   validateBody(createDirectorySchema),
-//   createNewDirectory,
-// );
+router.get("/breadcrumbs/:id",
+  validateParams(directoryParamsSchema),
+  getDirectoryBreadcrumbs,
+);
 
-// router.patch(
-//   "/:id",
-//   authenticate,
-//   validateParams(directoryParamsSchema),
-//   validateBody(renameDirectorySchema),
-//   renameExistingDirectory,
-// );
+router.get("/:id", validateParams(directoryParamsSchema), getDirectory);
 
-// router.delete(
-//   "/:id",
-//   authenticate,
-//   validateParams(directoryParamsSchema),
-//   deleteExistingDirectory,
-// );
+router.post("/:id", validateParams(directoryParamsSchema),validateBody(createDirectorySchema), createNewDirectory);
+
+router.patch(
+  "/:id",
+  validateParams(directoryParamsSchema),
+  validateBody(renameDirectorySchema),
+  renameExistingDirectory,
+);
 
 export default router;

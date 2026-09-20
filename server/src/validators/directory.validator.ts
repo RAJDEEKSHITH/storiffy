@@ -1,26 +1,14 @@
-import { z } from "zod";
+import * as z from "zod";
 
-export const directoryParamsSchema = z.object({
-  id: z.string().regex(/^[0-9a-fA-F]{24}$/, "Invalid directory ID"),
-});
+const objectId = z.string().regex(/^[0-9a-fA-F]{24}$/, "Invalid ID");
+
+export const directoryParamsSchema = z.object({ id: objectId });
 
 export const createDirectorySchema = z.object({
-  parentDirectoryId: z
-    .string()
-    .regex(/^[0-9a-fA-F]{24}$/, "Invalid parent directory ID"),
-
-  name: z
-    .string()
-    .trim()
-    .min(1)
-    .max(100)
-    .default("New folder"),
+  parentDirectoryId: objectId,
+  name: z.string().trim().max(255).default(""),
 });
 
 export const renameDirectorySchema = z.object({
-  name: z
-    .string()
-    .trim()
-    .min(1, "Folder name is required")
-    .max(100, "Folder name is too long"),
+  name: z.string().trim().min(1).max(255),
 });
