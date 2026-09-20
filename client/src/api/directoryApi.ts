@@ -10,8 +10,8 @@ export const getDirectoryItems = async (
   directoryId?: string,
 ): Promise<DirectoryResponse> => {
   const url = directoryId
-    ? `/directory/${directoryId}`
-    : "/directory";
+    ? `/directories/${directoryId}`
+    : "/directories";
 
   const response = await axios.get<{
     success: boolean;
@@ -31,7 +31,7 @@ export const createFolder = async ({
 }) => {
   const response =
     await axios.post<CreateDirectoryResponse>(
-      "/directory",
+      "/directories",
       {
         parentDirectoryId,
         name,
@@ -47,7 +47,7 @@ export const renameDirectory = async (
 ) => {
   const response =
     await axios.patch<RenameDirectoryResponse>(
-      `/directory/${directoryId}`,
+      `/directories/${directoryId}`,
       {
         name,
       },

@@ -4,7 +4,11 @@ import {
   createNewDirectory,
   getDirectory,
   getDirectoryBreadcrumbs,
+  getDirectoryTrash,
+  moveDirectoryToTrash,
+  permanentlyDeleteExistingDirectory,
   renameExistingDirectory,
+  restoreExistingDirectory,
 } from "../controllers/directory.controller.js";
 
 import { authenticate } from "../middlewares/auth.middleware.js";
@@ -20,26 +24,125 @@ import {
   renameDirectorySchema,
 } from "../validators/directory.validator.js";
 
-const router = Router();
-
 // Base path: /api/directory
+
+const router = Router();
 
 router.use(authenticate);
 
-router.get("/breadcrumbs/:id",
-  validateParams(directoryParamsSchema),
+/*
+|--------------------------------------------------------------------------
+| Trash
+|--------------------------------------------------------------------------
+*/
+
+router.get(
+  "/trash",
+  getDirectoryTrash,
+);
+
+/*
+|--------------------------------------------------------------------------
+| Breadcrumbs
+|--------------------------------------------------------------------------
+*/
+
+router.get(
+  "/breadcrumbs/:id",
+  validateParams(
+    directoryParamsSchema,
+  ),
   getDirectoryBreadcrumbs,
 );
 
-router.get("/:id", validateParams(directoryParamsSchema), getDirectory);
+/*
+|--------------------------------------------------------------------------
+| Directory contents
+|--------------------------------------------------------------------------
+*/
 
-router.post("/:id", validateParams(directoryParamsSchema),validateBody(createDirectorySchema), createNewDirectory);
+router.get(
+  "/:id",
+  validateParams(
+    directoryParamsSchema,
+  ),
+  getDirectory,
+);
+
+/*
+|--------------------------------------------------------------------------
+| Create directory
+|--------------------------------------------------------------------------
+*/
+
+router.post(
+  "/:id",
+  validateParams(
+    directoryParamsSchema,
+  ),
+  validateBody(
+    createDirectorySchema,
+  ),
+  createNewDirectory,
+);
+
+/*
+|--------------------------------------------------------------------------
+| Rename directory
+|--------------------------------------------------------------------------
+*/
 
 router.patch(
   "/:id",
-  validateParams(directoryParamsSchema),
-  validateBody(renameDirectorySchema),
+  validateParams(
+    directoryParamsSchema,
+  ),
+  validateBody(
+    renameDirectorySchema,
+  ),
   renameExistingDirectory,
+);
+
+/*
+|--------------------------------------------------------------------------
+| Restore directory
+|--------------------------------------------------------------------------
+*/
+
+router.post(
+  "/restore/:id",
+  validateParams(
+    directoryParamsSchema,
+  ),
+  restoreExistingDirectory,
+);
+
+/*
+|--------------------------------------------------------------------------
+| Permanent delete
+|--------------------------------------------------------------------------
+*/
+
+router.delete(
+  "/permanent/:id",
+  validateParams(
+    directoryParamsSchema,
+  ),
+  permanentlyDeleteExistingDirectory,
+);
+
+/*
+|--------------------------------------------------------------------------
+| Move to trash
+|--------------------------------------------------------------------------
+*/
+
+router.delete(
+  "/:id",
+  validateParams(
+    directoryParamsSchema,
+  ),
+  moveDirectoryToTrash,
 );
 
 export default router;

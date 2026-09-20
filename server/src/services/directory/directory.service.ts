@@ -1,189 +1,1161 @@
 import mongoose from "mongoose";
+
 import Directory from "../../models/directory.model.js";
 import File from "../../models/file.model.js";
+import User from "../../models/user.model.js";
 import { AppError } from "../../utils/app.error.js";
 
-// mongoose objectId utility
-const ToMongooseObjectId = (id: string) => new mongoose.Types.ObjectId(id);
+import {
+  abortMultipartUpload,
+  deleteS3Objects,
+} from "../aws/s3.service.js";
 
-const ensureParentDirectory = async (
-  userId: string,
-  parentDirectoryId: string,
-) => {
-  const directory = await Directory.findOne({
-    _id: parentDirectoryId,
-    userId,
-    deletedAt: null,
-  }).lean();
-  if (!directory) throw new AppError("Parent directory does not exists", 404);
-  return directory;
-};
+const toMongooseObjectId = (
+  id: string,
+) =>
+  new mongoose.Types.ObjectId(id);
 
-const makeUniqueDirectoryName = async (
-  userId: string,
-  parentDirectoryId: string,
-  requestedName: string,
-) => {
-  const name = requestedName.trim() || "New Folder";
-  const existingDirectory = await Directory.findOne({
-    userId,
-    name,
-    parentDirectoryId,
-    deletedAt: null,
-  })
-    .select("_id")
-    .lean();
+/*
+|--------------------------------------------------------------------------
+| Get all descendants of a directory
+|--------------------------------------------------------------------------
+|
+| Includes the root directory itself.
+|--------------------------------------------------------------------------
+*/
 
-  if (!existingDirectory) return name;
+const getDirectoryTreeIds =
+  async (
+    userId: string,
+    rootDirectoryId: mongoose.Types.ObjectId,
+  ) => {
+    const allIds: mongoose.Types.ObjectId[] =
+      [rootDirectoryId];
 
-  if (!/^New folder(?: \(\d+\))?$/.test(name)) {
-    throw new AppError("A folder with this name already exists", 409);
-  }
-  const siblingsSimilarDirectoryNames = await Directory.find({
-    userId,
-    parentDirectoryId,
-    deletedAt: null,
-    name: /^New folder(?: \(\d+\))?$/,
-  })
-    .select("name")
-    .lean();
+    const visited =
+      new Set<string>([
+        rootDirectoryId.toString(),
+      ]);
 
-  const names = new Set(siblingsSimilarDirectoryNames.map((item) => item.name));
-  let index = 1;
-  while (names.has(`New folder (${index})`)) index += 1;
-  return `New folder (${index})`;
-};
+    let frontier:
+      mongoose.Types.ObjectId[] = [
+        rootDirectoryId,
+      ];
 
-// create new directory
-export const createDirectory = async (
-  userId: string,
-  parentDirectoryId: string,
-  name: string,
-) => {
-  const parent = await ensureParentDirectory(userId, parentDirectoryId);
-  const directoryName = await makeUniqueDirectoryName(
-    userId,
-    parent._id.toString(),
-    name,
-  );
-  return Directory.create({
-    name: directoryName,
-    parentDirectoryId: parent._id,
-    userId: ToMongooseObjectId(userId),
-    size: 0,
-    deletedAt: null,
-  });
-};
+    while (
+      frontier.length > 0
+    ) {
+      const children =
+        await Directory.find({
+          userId,
+          parentDirectoryId: {
+            $in: frontier,
+          },
+        })
+          .select("_id")
+          .lean();
 
-// get breadcrumbs of the current directory
-export const getBreadcrumbs = async ({
-  userId,
-  directoryId
-}: {
-  userId: string;
-  directoryId: string;
-}) => {
-  let current = await Directory.findOne({
-    _id: directoryId,
-    userId,
-    deletedAt: null,
-  }).lean();
+      const nextFrontier:
+        mongoose.Types.ObjectId[] = [];
 
-  if (!current) {
-    throw new AppError("Directory not found", 404);
-  }
+      for (const child of children) {
+        const childId =
+          child._id.toString();
 
-  const breadcrumbs: Array<{
-    id: string;
-    name: string;
-  }> = [];
+        if (visited.has(childId)) {
+          continue;
+        }
 
-  while (current) {
-    breadcrumbs.unshift({
-      id: current._id.toString(),
-      name: current.name,
-    });
+        visited.add(childId);
 
-    if (!current.parentDirectoryId) {
-      break;
+        nextFrontier.push(
+          child._id,
+        );
+
+        allIds.push(
+          child._id,
+        );
+      }
+
+      frontier = nextFrontier;
     }
 
-    current = await Directory.findOne({
-      _id: current.parentDirectoryId,
-      userId,
-      deletedAt: null,
-    }).lean();
-  }
-
-  return breadcrumbs;
-};
-
-export const getDirectoryItems = async (
-  userId: string,
-  directoryId: string,
-) => {
-  const directory = await Directory.findOne({
-    _id: directoryId,
-    userId,
-    deletedAt: null,
-  }).lean();
-
-  if (!directory) {
-    throw new AppError("Directory Not Found", 404);
-  }
-
-  const [directories, files, breadcrumbs] = await Promise.all([
-    Directory.find({
-      parentDirectoryId: directory._id,
-      userId,
-      deletedAt: null,
-    })
-      .sort({ updatedAt: -1 })
-      .lean(),
-    File.find({
-      directoryId: directory._id,
-      userId,
-      deletedAt: null,
-      status: { $in: ["uploading", "ready"] },
-    })
-      .sort({ updatedAt: -1 })
-      .lean(),
-    getBreadcrumbs({userId, directoryId : directory._id.toString()}),
-  ]);
-
-  return {
-    directory,
-    directories,
-    files,
-    breadcrumbs,
+    return allIds;
   };
-};
 
-// rename directory
+/*
+|--------------------------------------------------------------------------
+| Get top-level trash root
+|--------------------------------------------------------------------------
+|
+| Example:
+|
+| Projects       <- trash root
+|   React
+|     App
+|
+| If user tries to restore React or App,
+| this helper returns Projects.
+|--------------------------------------------------------------------------
+*/
 
-export const renameDirectory = async (
-  userId: string,
-  directoryId: string,
-  name: string,
-) => {
-  const directory = await Directory.findOne({
-    _id: directoryId,
+const getTrashRootDirectory =
+  async ({
     userId,
-    deletedAt: null,
-  });
-  if (!directory) throw new AppError("Directory not found", 404);
-  if (directory.parentDirectoryId === null)
-    throw new AppError("Home folder cannot be renamed", 400);
+    directory,
+  }: {
+    userId: string;
+    directory: {
+      _id: mongoose.Types.ObjectId;
+      parentDirectoryId:
+        | mongoose.Types.ObjectId
+        | null;
+      deletedAt: Date | null;
+    };
+  }) => {
+    let current =
+      directory;
 
-    const duplicate = await Directory.findOne({
-    _id: { $ne: directory._id },
+    while (
+      current.parentDirectoryId
+    ) {
+      const parent =
+        await Directory.findOne({
+          _id:
+            current.parentDirectoryId,
+          userId,
+          deletedAt: {
+            $ne: null,
+          },
+        }).lean();
+
+      if (!parent) {
+        break;
+      }
+
+      current = parent;
+    }
+
+    return current;
+  };
+
+/*
+|--------------------------------------------------------------------------
+| Ensure parent directory exists
+|--------------------------------------------------------------------------
+*/
+
+const ensureParentDirectory =
+  async (
+    userId: string,
+    parentDirectoryId: string,
+  ) => {
+    const directory =
+      await Directory.findOne({
+        _id: parentDirectoryId,
+        userId,
+        deletedAt: null,
+      })
+        .select("_id")
+        .lean();
+
+    if (!directory) {
+      throw new AppError(
+        "Parent directory does not exist",
+        404,
+      );
+    }
+
+    return directory;
+  };
+
+/*
+|--------------------------------------------------------------------------
+| Make unique directory name
+|--------------------------------------------------------------------------
+*/
+
+const makeUniqueDirectoryName =
+  async (
+    userId: string,
+    parentDirectoryId: string,
+    requestedName: string,
+  ) => {
+    const name =
+      requestedName.trim() ||
+      "New Folder";
+
+    const existingDirectory =
+      await Directory.findOne({
+        userId,
+        name,
+        parentDirectoryId,
+        deletedAt: null,
+      })
+        .select("_id")
+        .lean();
+
+    if (!existingDirectory) {
+      return name;
+    }
+
+    if (
+      !/^New folder(?: \(\d+\))?$/.test(
+        name,
+      )
+    ) {
+      throw new AppError(
+        "A folder with this name already exists",
+        409,
+      );
+    }
+
+    const siblingsSimilarDirectoryNames =
+      await Directory.find({
+        userId,
+        parentDirectoryId,
+        deletedAt: null,
+        name: /^New folder(?: \(\d+\))?$/,
+      })
+        .select("name")
+        .lean();
+
+    const names = new Set(
+      siblingsSimilarDirectoryNames.map(
+        (item) => item.name,
+      ),
+    );
+
+    let index = 1;
+
+    while (
+      names.has(
+        `New folder (${index})`,
+      )
+    ) {
+      index += 1;
+    }
+
+    return `New folder (${index})`;
+  };
+
+/*
+|--------------------------------------------------------------------------
+| Create Directory
+|--------------------------------------------------------------------------
+*/
+
+export const createDirectory =
+  async (
+    userId: string,
+    parentDirectoryId: string,
+    name: string,
+  ) => {
+    const parent =
+      await ensureParentDirectory(
+        userId,
+        parentDirectoryId,
+      );
+
+    const directoryName =
+      await makeUniqueDirectoryName(
+        userId,
+        parent._id.toString(),
+        name,
+      );
+
+    return Directory.create({
+      name: directoryName,
+      parentDirectoryId:
+        parent._id,
+      userId:
+        toMongooseObjectId(userId),
+      size: 0,
+      deletedAt: null,
+    });
+  };
+
+/*
+|--------------------------------------------------------------------------
+| Breadcrumbs
+|--------------------------------------------------------------------------
+*/
+
+export const getBreadcrumbs =
+  async ({
     userId,
-    parentDirectoryId: directory.parentDirectoryId,
-    deletedAt: null,
-    name,
-  }).select("_id").lean();
-  if (duplicate) throw new AppError("A folder with this name already exists", 409);
-  directory.name = name;
-  await directory.save();
-  return directory
-};
+    directoryId,
+  }: {
+    userId: string;
+    directoryId: string;
+  }) => {
+    let current =
+      await Directory.findOne({
+        _id: directoryId,
+        userId,
+        deletedAt: null,
+      }).lean();
+
+    if (!current) {
+      throw new AppError(
+        "Directory not found",
+        404,
+      );
+    }
+
+    const breadcrumbs: Array<{
+      id: string;
+      name: string;
+    }> = [];
+
+    while (current) {
+      breadcrumbs.unshift({
+        id: current._id.toString(),
+        name: current.name,
+      });
+
+      if (
+        !current.parentDirectoryId
+      ) {
+        break;
+      }
+
+      current =
+        await Directory.findOne({
+          _id:
+            current.parentDirectoryId,
+          userId,
+          deletedAt: null,
+        }).lean();
+    }
+
+    return breadcrumbs;
+  };
+
+/*
+|--------------------------------------------------------------------------
+| Get Directory Contents
+|--------------------------------------------------------------------------
+*/
+
+export const getDirectoryItems =
+  async (
+    userId: string,
+    directoryId: string,
+  ) => {
+    const directory =
+      await Directory.findOne({
+        _id: directoryId,
+        userId,
+        deletedAt: null,
+      }).lean();
+
+    if (!directory) {
+      throw new AppError(
+        "Directory not found",
+        404,
+      );
+    }
+
+    const [
+      directories,
+      files,
+      breadcrumbs,
+    ] = await Promise.all([
+      Directory.find({
+        parentDirectoryId:
+          directory._id,
+        userId,
+        deletedAt: null,
+      })
+        .sort({
+          updatedAt: -1,
+        })
+        .lean(),
+
+      File.find({
+        directoryId:
+          directory._id,
+        userId,
+        deletedAt: null,
+        status: {
+          $in: [
+            "uploading",
+            "ready",
+          ],
+        },
+      })
+        .sort({
+          updatedAt: -1,
+        })
+        .lean(),
+
+      getBreadcrumbs({
+        userId,
+        directoryId:
+          directory._id.toString(),
+      }),
+    ]);
+
+    return {
+      directory,
+      directories,
+      files,
+      breadcrumbs,
+    };
+  };
+
+/*
+|--------------------------------------------------------------------------
+| Rename Directory
+|--------------------------------------------------------------------------
+*/
+
+export const renameDirectory =
+  async (
+    userId: string,
+    directoryId: string,
+    name: string,
+  ) => {
+    const directory =
+      await Directory.findOne({
+        _id: directoryId,
+        userId,
+        deletedAt: null,
+      });
+
+    if (!directory) {
+      throw new AppError(
+        "Directory not found",
+        404,
+      );
+    }
+
+    if (
+      directory.parentDirectoryId ===
+      null
+    ) {
+      throw new AppError(
+        "Home folder cannot be renamed",
+        400,
+      );
+    }
+
+    const duplicate =
+      await Directory.findOne({
+        _id: {
+          $ne: directory._id,
+        },
+        userId,
+        parentDirectoryId:
+          directory.parentDirectoryId,
+        deletedAt: null,
+        name,
+      })
+        .select("_id")
+        .lean();
+
+    if (duplicate) {
+      throw new AppError(
+        "A folder with this name already exists",
+        409,
+      );
+    }
+
+    directory.name = name;
+
+    await directory.save();
+
+    return directory;
+  };
+
+/*
+|--------------------------------------------------------------------------
+| Move Directory To Trash
+|--------------------------------------------------------------------------
+|
+| Entire directory tree is moved to trash.
+|
+| User storage DOES NOT decrease.
+|--------------------------------------------------------------------------
+*/
+
+export const softDeleteDirectory =
+  async ({
+    userId,
+    directoryId,
+  }: {
+    userId: string;
+    directoryId: string;
+  }) => {
+    const directory =
+      await Directory.findOne({
+        _id: directoryId,
+        userId,
+        deletedAt: null,
+      });
+
+    if (!directory) {
+      throw new AppError(
+        "Directory not found",
+        404,
+      );
+    }
+
+    if (
+      directory.parentDirectoryId ===
+      null
+    ) {
+      throw new AppError(
+        "Home folder cannot be deleted",
+        400,
+      );
+    }
+
+    const directoryIds =
+      await getDirectoryTreeIds(
+        userId,
+        directory._id,
+      );
+
+    /*
+     * Do not allow moving a directory to trash
+     * while anything inside it is uploading.
+     */
+    const activeUpload =
+      await File.findOne({
+        userId,
+        directoryId: {
+          $in: directoryIds,
+        },
+        status: "uploading",
+      })
+        .select("_id")
+        .lean();
+
+    if (activeUpload) {
+      throw new AppError(
+        "Cannot delete a folder while a file is uploading",
+        409,
+      );
+    }
+
+    const deletedAt =
+      new Date();
+
+    const session =
+      await mongoose.startSession();
+
+    try {
+      await session.withTransaction(
+        async () => {
+          await Directory.updateMany(
+            {
+              _id: {
+                $in: directoryIds,
+              },
+              userId,
+              deletedAt: null,
+            },
+            {
+              $set: {
+                deletedAt,
+              },
+            },
+            {
+              session,
+            },
+          );
+
+          await File.updateMany(
+            {
+              directoryId: {
+                $in: directoryIds,
+              },
+              userId,
+              status: "ready",
+              deletedAt: null,
+            },
+            {
+              $set: {
+                deletedAt,
+              },
+            },
+            {
+              session,
+            },
+          );
+        },
+      );
+    } finally {
+      await session.endSession();
+    }
+
+    return {
+      directoryId:
+        directory._id.toString(),
+      deletedAt,
+    };
+  };
+
+/*
+|--------------------------------------------------------------------------
+| Get Directory Trash
+|--------------------------------------------------------------------------
+|
+| Only top-level trashed directories are returned.
+|--------------------------------------------------------------------------
+*/
+
+export const getTrashedDirectories =
+  async (userId: string) => {
+    const directories =
+      await Directory.find({
+        userId,
+        deletedAt: {
+          $ne: null,
+        },
+      })
+        .sort({
+          deletedAt: -1,
+        })
+        .lean();
+
+    const deletedIds =
+      new Set(
+        directories.map(
+          (directory) =>
+            directory._id.toString(),
+        ),
+      );
+
+    return directories.filter(
+      (directory) => {
+        if (
+          directory.parentDirectoryId ===
+          null
+        ) {
+          return true;
+        }
+
+        return !deletedIds.has(
+          directory.parentDirectoryId.toString(),
+        );
+      },
+    );
+  };
+
+/*
+|--------------------------------------------------------------------------
+| Restore Directory
+|--------------------------------------------------------------------------
+|
+| IMPORTANT:
+|
+| Only the top-level trashed directory can
+| be restored.
+|
+| Restoring it restores the complete tree.
+|--------------------------------------------------------------------------
+*/
+
+export const restoreDirectory =
+  async ({
+    userId,
+    directoryId,
+  }: {
+    userId: string;
+    directoryId: string;
+  }) => {
+    const directory =
+      await Directory.findOne({
+        _id: directoryId,
+        userId,
+        deletedAt: {
+          $ne: null,
+        },
+      });
+
+    if (!directory) {
+      throw new AppError(
+        "Trashed directory not found",
+        404,
+      );
+    }
+
+    /*
+     * Find the top-most deleted ancestor.
+     */
+    const trashRoot =
+      await getTrashRootDirectory({
+        userId,
+        directory,
+      });
+
+    if (
+      trashRoot._id.toString() !==
+      directory._id.toString()
+    ) {
+      throw new AppError(
+        "Restore the top-level trashed directory instead",
+        409,
+      );
+    }
+
+    /*
+     * The directory's parent must be active.
+     */
+    if (
+      directory.parentDirectoryId
+    ) {
+      const parent =
+        await Directory.findOne({
+          _id:
+            directory.parentDirectoryId,
+          userId,
+          deletedAt: null,
+        })
+          .select("_id")
+          .lean();
+
+      if (!parent) {
+        throw new AppError(
+          "Restore the parent directory first",
+          409,
+        );
+      }
+    }
+
+    const directoryIds =
+      await getDirectoryTreeIds(
+        userId,
+        directory._id,
+      );
+
+    const directories =
+      await Directory.find({
+        _id: {
+          $in: directoryIds,
+        },
+        userId,
+      }).lean();
+
+    /*
+     * Prevent name conflicts with active
+     * directories.
+     */
+    for (const item of directories) {
+      const duplicate =
+        await Directory.findOne({
+          _id: {
+            $nin: directoryIds,
+          },
+          userId,
+          parentDirectoryId:
+            item.parentDirectoryId,
+          deletedAt: null,
+          name: item.name,
+        })
+          .select("_id")
+          .lean();
+
+      if (duplicate) {
+        throw new AppError(
+          `Cannot restore "${item.name}" because a folder with the same name already exists`,
+          409,
+        );
+      }
+    }
+
+    const session =
+      await mongoose.startSession();
+
+    try {
+      await session.withTransaction(
+        async () => {
+          /*
+           * Restore entire directory tree.
+           */
+          await Directory.updateMany(
+            {
+              _id: {
+                $in: directoryIds,
+              },
+              userId,
+              deletedAt: {
+                $ne: null,
+              },
+            },
+            {
+              $set: {
+                deletedAt: null,
+              },
+            },
+            {
+              session,
+            },
+          );
+
+          /*
+           * Restore every file in the tree.
+           */
+          await File.updateMany(
+            {
+              userId,
+              directoryId: {
+                $in: directoryIds,
+              },
+              deletedAt: {
+                $ne: null,
+              },
+              status: "ready",
+            },
+            {
+              $set: {
+                deletedAt: null,
+              },
+            },
+            {
+              session,
+            },
+          );
+
+          /*
+           * Recalculate direct-file size for every
+           * restored directory.
+           *
+           * User storage is NOT changed.
+           */
+          const sizes =
+            await File.aggregate([
+              {
+                $match: {
+                  userId:
+                    toMongooseObjectId(
+                      userId,
+                    ),
+                  directoryId: {
+                    $in: directoryIds,
+                  },
+                  status: "ready",
+                  deletedAt: null,
+                },
+              },
+              {
+                $group: {
+                  _id: "$directoryId",
+                  totalSize: {
+                    $sum: "$size",
+                  },
+                },
+              },
+            ]).session(session);
+
+          const sizeMap =
+            new Map<string, number>();
+
+          for (const item of sizes) {
+            sizeMap.set(
+              item._id.toString(),
+              item.totalSize,
+            );
+          }
+
+          /*
+           * Reset all restored directory sizes.
+           */
+          await Directory.updateMany(
+            {
+              _id: {
+                $in: directoryIds,
+              },
+              userId,
+            },
+            {
+              $set: {
+                size: 0,
+              },
+            },
+            {
+              session,
+            },
+          );
+
+          /*
+           * Apply recalculated direct-file sizes.
+           */
+          for (const [
+            id,
+            size,
+          ] of sizeMap) {
+            await Directory.updateOne(
+              {
+                _id:
+                  toMongooseObjectId(id),
+                userId,
+              },
+              {
+                $set: {
+                  size,
+                },
+              },
+              {
+                session,
+              },
+            );
+          }
+        },
+      );
+    } finally {
+      await session.endSession();
+    }
+
+    return Directory.findById(
+      directory._id,
+    ).lean();
+  };
+
+/*
+|--------------------------------------------------------------------------
+| Permanently Delete Directory
+|--------------------------------------------------------------------------
+|
+| Only the top-level trashed directory can be
+| permanently deleted.
+|
+| Entire tree is deleted.
+|
+| User storage decreases by the sum of all
+| ready files inside the tree.
+|--------------------------------------------------------------------------
+*/
+
+export const permanentlyDeleteDirectory =
+  async ({
+    userId,
+    directoryId,
+  }: {
+    userId: string;
+    directoryId: string;
+  }) => {
+    const directory =
+      await Directory.findOne({
+        _id: directoryId,
+        userId,
+        deletedAt: {
+          $ne: null,
+        },
+      });
+
+    if (!directory) {
+      throw new AppError(
+        "Trashed directory not found",
+        404,
+      );
+    }
+
+    if (
+      directory.parentDirectoryId ===
+      null
+    ) {
+      throw new AppError(
+        "Home folder cannot be permanently deleted",
+        400,
+      );
+    }
+
+    /*
+     * Only delete the top-level trash item.
+     */
+    const trashRoot =
+      await getTrashRootDirectory({
+        userId,
+        directory,
+      });
+
+    if (
+      trashRoot._id.toString() !==
+      directory._id.toString()
+    ) {
+      throw new AppError(
+        "Permanently delete the top-level trashed directory instead",
+        409,
+      );
+    }
+
+    const directoryIds =
+      await getDirectoryTreeIds(
+        userId,
+        directory._id,
+      );
+
+    const files =
+      await File.find({
+        userId,
+        directoryId: {
+          $in: directoryIds,
+        },
+      }).lean();
+
+    /*
+     * There should not be active uploads inside
+     * a trashed directory because directory trash
+     * rejects uploads.
+     */
+    const uploadingFile =
+      files.find(
+        (file) =>
+          file.status ===
+          "uploading",
+      );
+
+    if (uploadingFile) {
+      throw new AppError(
+        "Cannot permanently delete a directory while a file is uploading",
+        409,
+      );
+    }
+
+    /*
+     * Clean any stale multipart uploads.
+     */
+    for (const file of files) {
+      if (file.uploadId) {
+        try {
+          await abortMultipartUpload({
+            key:
+              file.storageKey,
+            uploadId:
+              file.uploadId,
+          });
+        } catch (error) {
+          console.error(
+            "Failed to abort stale multipart upload:",
+            error,
+          );
+
+          throw new AppError(
+            "Failed to permanently delete directory",
+            500,
+          );
+        }
+      }
+    }
+
+    const storageKeys =
+      files.map(
+        (file) =>
+          file.storageKey,
+      );
+
+    /*
+     * Delete all S3 objects.
+     */
+    if (
+      storageKeys.length > 0
+    ) {
+      const response =
+        await deleteS3Objects(
+          storageKeys,
+        );
+
+      if (
+        response?.Errors &&
+        response.Errors.length >
+          0
+      ) {
+        console.error(
+          "Some S3 objects failed to delete:",
+          response.Errors,
+        );
+
+        throw new AppError(
+          "Some files could not be permanently deleted",
+          500,
+        );
+      }
+    }
+
+    /*
+     * Only ready files consume the user's
+     * permanent storage reservation.
+     */
+    const storageToFree =
+      files.reduce(
+        (total, file) =>
+          file.status ===
+          "ready"
+            ? total + file.size
+            : total,
+        0,
+      );
+
+    const session =
+      await mongoose.startSession();
+
+    try {
+      await session.withTransaction(
+        async () => {
+          const user =
+            await User.findById(
+              userId,
+            ).session(session);
+
+          if (!user) {
+            throw new AppError(
+              "User not found",
+              404,
+            );
+          }
+
+          user.storageUsedInBytes =
+            Math.max(
+              0,
+              user.storageUsedInBytes -
+                storageToFree,
+            );
+
+          await user.save({
+            session,
+          });
+
+          await File.deleteMany(
+            {
+              userId,
+              directoryId: {
+                $in: directoryIds,
+              },
+            },
+            {
+              session,
+            },
+          );
+
+          await Directory.deleteMany(
+            {
+              userId,
+              _id: {
+                $in: directoryIds,
+              },
+            },
+            {
+              session,
+            },
+          );
+        },
+      );
+    } finally {
+      await session.endSession();
+    }
+
+    return {
+      directoryId:
+        directory._id.toString(),
+      deletedDirectories:
+        directoryIds.length,
+      deletedFiles:
+        files.length,
+      storageFreedInBytes:
+        storageToFree,
+    };
+  };

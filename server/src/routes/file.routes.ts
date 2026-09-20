@@ -1,96 +1,202 @@
 import { Router } from "express";
 
 import {
+  abortUpload,
+  completeMultipartUpload,
+  completeSingleUpload,
+  generatePartUploadUrl,
+  getFileTrash,
   getFileUrl,
   initiateUpload,
-  generatePartUploadUrl,
-  completeSingleUpload,
-  completeMultipartUpload,
-  abortUpload,
-  renameFile,
-  softDeleteFile,
   permanentDeleteFile,
+  renameFile,
+  restoreExistingFile,
+  softDeleteFile,
 } from "../controllers/file.controller.js";
 
 import {
-  fileIdParamsSchema,
-  initiateUploadSchema,
-  generatePartUrlSchema,
   completeMultipartUploadSchema,
-  renameFileSchema,
+  fileIdParamsSchema,
+  generatePartUrlSchema,
   getFileUrlSchema,
+  initiateUploadSchema,
+  renameFileSchema,
 } from "../validators/file.validator.js";
 
 import {
   validateBody,
   validateParams,
 } from "../middlewares/validate.middleware.js";
+
 import { authenticate } from "../middlewares/auth.middleware.js";
 
 // Base path: /api/files
 
 const router = Router();
 
-// Start single or multipart upload
 router.use(authenticate);
+
+/*
+|--------------------------------------------------------------------------
+| Trash
+|--------------------------------------------------------------------------
+*/
+
+router.get(
+  "/trash",
+  getFileTrash,
+);
+
+/*
+|--------------------------------------------------------------------------
+| Start upload
+|--------------------------------------------------------------------------
+*/
+
 router.post(
   "/upload/initiate",
-  validateBody(initiateUploadSchema),
+  validateBody(
+    initiateUploadSchema,
+  ),
   initiateUpload,
 );
 
-// Generate / regenerate URL for one multipart part
+/*
+|--------------------------------------------------------------------------
+| Multipart part URL
+|--------------------------------------------------------------------------
+*/
+
 router.post(
   "/upload/part-url/:id",
-  validateParams(fileIdParamsSchema),
-  validateBody(generatePartUrlSchema),
+  validateParams(
+    fileIdParamsSchema,
+  ),
+  validateBody(
+    generatePartUrlSchema,
+  ),
   generatePartUploadUrl,
 );
 
+/*
+|--------------------------------------------------------------------------
+| Complete single upload
+|--------------------------------------------------------------------------
+*/
+
 router.post(
   "/upload/complete/:id",
-  validateParams(fileIdParamsSchema),
+  validateParams(
+    fileIdParamsSchema,
+  ),
   completeSingleUpload,
 );
 
+/*
+|--------------------------------------------------------------------------
+| Complete multipart upload
+|--------------------------------------------------------------------------
+*/
+
 router.post(
   "/upload/complete-multipart/:id",
-  validateParams(fileIdParamsSchema),
-  validateBody(completeMultipartUploadSchema),
+  validateParams(
+    fileIdParamsSchema,
+  ),
+  validateBody(
+    completeMultipartUploadSchema,
+  ),
   completeMultipartUpload,
 );
 
-// Abort an unfinished upload
+/*
+|--------------------------------------------------------------------------
+| Abort upload
+|--------------------------------------------------------------------------
+*/
+
 router.post(
   "/upload/abort/:id",
-  validateParams(fileIdParamsSchema),
+  validateParams(
+    fileIdParamsSchema,
+  ),
   abortUpload,
 );
 
-// Generate CloudFront view/download URL
+/*
+|--------------------------------------------------------------------------
+| Generate CloudFront URL
+|--------------------------------------------------------------------------
+*/
+
 router.post(
   "/:id",
-  validateParams(fileIdParamsSchema),
-  validateBody(getFileUrlSchema),
+  validateParams(
+    fileIdParamsSchema,
+  ),
+  validateBody(
+    getFileUrlSchema,
+  ),
   getFileUrl,
 );
 
-// Rename file
+/*
+|--------------------------------------------------------------------------
+| Rename file
+|--------------------------------------------------------------------------
+*/
+
 router.patch(
   "/:id",
-  validateParams(fileIdParamsSchema),
-  validateBody(renameFileSchema),
+  validateParams(
+    fileIdParamsSchema,
+  ),
+  validateBody(
+    renameFileSchema,
+  ),
   renameFile,
 );
 
-// Move file to trash
-router.delete("/:id", validateParams(fileIdParamsSchema), softDeleteFile);
+/*
+|--------------------------------------------------------------------------
+| Restore file
+|--------------------------------------------------------------------------
+*/
 
-// Permanently delete file
+router.post(
+  "/restore/:id",
+  validateParams(
+    fileIdParamsSchema,
+  ),
+  restoreExistingFile,
+);
+
+/*
+|--------------------------------------------------------------------------
+| Permanent delete
+|--------------------------------------------------------------------------
+*/
+
 router.delete(
   "/permanent/:id",
-  validateParams(fileIdParamsSchema),
+  validateParams(
+    fileIdParamsSchema,
+  ),
   permanentDeleteFile,
+);
+
+/*
+|--------------------------------------------------------------------------
+| Move to trash
+|--------------------------------------------------------------------------
+*/
+
+router.delete(
+  "/:id",
+  validateParams(
+    fileIdParamsSchema,
+  ),
+  softDeleteFile,
 );
 
 export default router;

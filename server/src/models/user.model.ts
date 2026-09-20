@@ -95,13 +95,6 @@ const userSchema = new Schema<UserI>(
   },
 );
 
-userSchema.index(
-  { googleId: 1 },
-  {
-    unique: true,
-    sparse: true,
-  },
-);
 
 const User = mongoose.model<UserI>("User", userSchema);
 
