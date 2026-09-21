@@ -14,35 +14,37 @@ const initialState: AuthState = {
 const authSlice = createSlice({
   name: "auth",
   initialState,
-
   reducers: {
     setUser: (state, action: PayloadAction<User>) => {
       state.user = action.payload;
     },
-
     clearUser: (state) => {
       state.user = null;
     },
-
     finishAuthCheck: (state) => {
       state.isCheckingAuth = false;
     },
-
     updateStorageUsed: (
       state,
       action: PayloadAction<number>,
     ) => {
       if (state.user) {
-        state.user.storageUsedInBytes = action.payload;
+        state.user.storageUsedInBytes = Math.max(
+          0,
+          action.payload,
+        );
       }
     },
-
-    updateUserPicture: (
+    decrementStorageUsed: (
       state,
-      action: PayloadAction<string | null>,
+      action: PayloadAction<number>,
     ) => {
       if (state.user) {
-        state.user.picture = action.payload;
+        state.user.storageUsedInBytes = Math.max(
+          0,
+          state.user.storageUsedInBytes -
+            Math.max(0, action.payload),
+        );
       }
     },
   },
@@ -53,7 +55,7 @@ export const {
   clearUser,
   finishAuthCheck,
   updateStorageUsed,
-  updateUserPicture,
+  decrementStorageUsed,
 } = authSlice.actions;
 
 export default authSlice.reducer;

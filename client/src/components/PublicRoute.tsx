@@ -1,6 +1,6 @@
 import { Navigate, Outlet } from "react-router-dom";
 import { useSelector } from "react-redux";
-
+import { Loader2 } from "lucide-react";
 import type { RootState } from "../store/store";
 
 const PublicRoute = () => {
@@ -11,31 +11,23 @@ const PublicRoute = () => {
     (state: RootState) => state.auth,
   );
 
-  // Wait until App.tsx finishes checking
-  // whether an existing session exists.
   if (isCheckingAuth) {
     return (
-      <div className="flex min-h-screen items-center justify-center">
-        <p className="text-sm text-slate-500">
-          Loading...
-        </p>
+      <div className="flex min-h-screen items-center justify-center bg-white">
+        <Loader2 className="size-5 animate-spin text-blue-600" />
       </div>
     );
   }
 
-  // Already logged in.
-  // Don't allow login/register pages.
   if (user) {
     return (
       <Navigate
-        to="/"
+        to={`/${user.rootDirectoryId}`}
         replace
       />
     );
   }
 
-  // Not authenticated.
-  // Allow login/register.
   return <Outlet />;
 };
 

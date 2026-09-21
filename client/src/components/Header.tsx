@@ -1,14 +1,40 @@
-import { Menu, Search, Share2 } from "lucide-react";
+import {
+  LogOut,
+  Menu,
+  Search,
+  Share2,
+  UserRound,
+} from "lucide-react";
+import { useState } from "react";
+import { useDispatch } from "react-redux";
+import { useLocation, useNavigate } from "react-router-dom";
 
+import { logoutUser } from "../api/authApi";
+import { getErrorMessage } from "../lib/error";
+import {
+  clearUser,
+} from "../store/auth/authSlice";
+import type { AppDispatch } from "../store/store";
 import type { User } from "../types/user";
+import { toast } from "./ui/toast";
+import { Avatar, AvatarFallback, AvatarImage } from "./ui/avatar";
+import { Button } from "./ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "./ui/dropdown-menu";
+import { Input } from "./ui/input";
 
 interface HeaderProps {
   user: User;
   search: string;
   onSearchChange: (value: string) => void;
   onMenuClick: () => void;
-  onProfileClick: () => void;
-  onShareClick: () => void;
 }
 
 const Header = ({
@@ -16,91 +42,166 @@ const Header = ({
   search,
   onSearchChange,
   onMenuClick,
-  onProfileClick,
-  onShareClick,
 }: HeaderProps) => {
-  const initials = user.name
-    .trim()
-    .split(/\s+/)
-    .map((word) => word[0])
-    .join("")
-    .slice(0, 2)
-    .toUpperCase();
+  const dispatch = useDispatch<AppDispatch>();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const [logoutLoading, setLogoutLoading] = useState(false);
+
+  const initials =
+    user.name
+      .split(" ")
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((part) => part[0]?.toUpperCase())
+      .join("") || "U";
+
+  const handleLogout = async () => {
+    setLogoutLoading(true);
+
+    try {
+      await logoutUser();
+      dispatch(clearUser());
+      toast.add({
+        title: "Signed out",
+        type: "success",
+      });
+      navigate("/login", {
+        replace: true,
+      });
+    } catch (error) {
+      console.error("Failed to sign out:", error);
+      toast.add({
+        title: "Unable to sign out",
+        description: getErrorMessage(
+          error,
+          "Please try again.",
+        ),
+        type: "error",
+      });
+    } finally {
+      setLogoutLoading(false);
+    }
+  };
+
+  const handleShareNavigation = () => {
+    if (location.pathname !== "/share") {
+      navigate("/share");
+    }
+  };
 
   return (
-    <header className="fixed left-0 right-0 top-0 z-40 border-b border-slate-200 bg-white lg:left-64">
-      <div className="flex h-[72px] items-center gap-3 px-4 sm:px-6">
-        {/* Mobile menu */}
-        <button
-          type="button"
+    <header className="fixed inset-x-0 top-0 z-30 h-16 border-b bg-white/95 backdrop-blur lg:left-64">
+      <div className="flex h-full items-center gap-3 px-4 sm:px-6">
+        <Button
+          variant="ghost"
+          size="icon"
+          className="lg:hidden"
           onClick={onMenuClick}
-          className="rounded-lg p-2 text-slate-600 hover:bg-slate-100 lg:hidden"
           aria-label="Open menu"
         >
-          <Menu size={21} />
-        </button>
+          <Menu className="size-5" />
+        </Button>
 
-        {/* Search */}
-        <div className="relative min-w-0 flex-1">
-          <Search
-            size={19}
-            className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400"
-          />
-
-          <input
-            type="text"
-            value={search}
-            onChange={(event) =>
-              onSearchChange(event.target.value)
-            }
-            placeholder="Search files and folders"
-            className="
-              h-11 w-full rounded-xl
-              border border-slate-200
-              bg-slate-50
-              pl-11 pr-4
-              text-sm text-slate-900
-              outline-none
-              placeholder:text-slate-400
-              focus:border-blue-500
-              focus:bg-white
-              focus:ring-2 focus:ring-blue-100
-            "
-          />
+        <div className="w-full max-w-xl">
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={search}
+              onChange={(event) =>
+                onSearchChange(event.target.value)
+              }
+              placeholder="Search files and folders"
+              className="h-10 rounded-lg border-slate-200 bg-slate-50 pl-9 focus-visible:border-blue-600 focus-visible:ring-blue-600/20"
+            />
+          </div>
         </div>
 
-        {/* Share */}
-        <button
-          type="button"
-          onClick={onShareClick}
-          className="hidden rounded-lg p-2 text-slate-500 hover:bg-slate-100 hover:text-slate-800 sm:block"
-        >
-          <Share2 size={20} />
-        </button>
+        <div className="ml-auto flex shrink-0 items-center gap-2">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="text-slate-600 hover:bg-blue-50 hover:text-blue-600"
+            onClick={handleShareNavigation}
+            aria-label="Shared links"
+            title="Shared links"
+          >
+            <Share2 className="size-5" />
+          </Button>
 
-        {/* Profile */}
-        <button
-          type="button"
-          onClick={onProfileClick}
-          className="
-            flex h-10 w-10 shrink-0
-            items-center justify-center
-            overflow-hidden rounded-full
-            bg-blue-600
-            text-xs font-bold text-white
-            hover:ring-4 hover:ring-blue-100
-          "
-        >
-          {user.picture ? (
-            <img
-              src={user.picture}
-              alt={user.name}
-              className="h-full w-full object-cover"
-            />
-          ) : (
-            initials
-          )}
-        </button>
+          <div className="h-7 w-px bg-slate-200" />
+
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              render={
+                <Button
+                  variant="ghost"
+                  className="size-10 rounded-full p-0 hover:bg-slate-100"
+                  aria-label="Open profile menu"
+                />
+              }
+            >
+              <Avatar className="size-9">
+                {user.picture ? (
+                  <AvatarImage
+                    src={user.picture}
+                    alt={user.name}
+                  />
+                ) : null}
+                <AvatarFallback className="bg-blue-50 text-blue-600">
+                  {user.picture ? (
+                    initials
+                  ) : (
+                    <UserRound className="size-4" />
+                  )}
+                </AvatarFallback>
+              </Avatar>
+            </DropdownMenuTrigger>
+
+            <DropdownMenuContent
+              align="end"
+              sideOffset={8}
+              className="w-64"
+            >
+              <DropdownMenuGroup>
+                <DropdownMenuLabel>
+                  <div className="truncate text-sm font-semibold text-foreground">
+                    {user.name}
+                  </div>
+                  <div className="truncate text-xs font-normal text-muted-foreground">
+                    {user.email}
+                  </div>
+                </DropdownMenuLabel>
+
+                <DropdownMenuItem
+                  onClick={() => {
+                    // Future API: profile/settings page.
+                    console.log(
+                      "Profile settings API is not implemented yet.",
+                    );
+                  }}
+                >
+                  <UserRound className="size-4 text-blue-600" />
+                  Profile
+                </DropdownMenuItem>
+              </DropdownMenuGroup>
+
+              <DropdownMenuSeparator />
+
+              <DropdownMenuGroup>
+                <DropdownMenuItem
+                  disabled={logoutLoading}
+                  onClick={() => void handleLogout()}
+                >
+                  <LogOut className="size-4 text-blue-600" />
+                  {logoutLoading
+                    ? "Signing out..."
+                    : "Sign out"}
+                </DropdownMenuItem>
+              </DropdownMenuGroup>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
       </div>
     </header>
   );
