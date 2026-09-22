@@ -39,6 +39,7 @@ import { createSession, deleteSession, enforceSessionLimit } from "./session.ser
             _id: rootDirectoryId,
             name: 'Home',
             userId,
+            createdBy : userId,
             parentDirectoryId: null,
           },
         ],

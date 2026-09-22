@@ -5,7 +5,12 @@ interface RegisterResponse {
   success: boolean;
   message: string;
   data: {
-    user: User;
+    user: {
+      id: string;
+      name: string;
+      email: string;
+      role: "user" | "manager" | "admin";
+    };
   };
 }
 
@@ -19,7 +24,7 @@ interface LoginResponse {
 
 interface CurrentUserResponse {
   success: boolean;
-  message: string;
+  message?: string;
   data: {
     user: User;
   };
@@ -33,17 +38,12 @@ export const registerUser = async ({
   name: string;
   email: string;
   password: string;
-}): Promise<User> => {
-  const response = await axios.post<RegisterResponse>(
-    "/auth/register",
-    {
-      name,
-      email,
-      password,
-    },
-  );
-
-  return response.data.data.user;
+}): Promise<void> => {
+  await axios.post<RegisterResponse>("/auth/register", {
+    name,
+    email,
+    password,
+  });
 };
 
 export const loginUser = async ({
@@ -53,22 +53,23 @@ export const loginUser = async ({
   email: string;
   password: string;
 }): Promise<User> => {
-  const response = await axios.post<LoginResponse>(
-    "/auth/login",
-    {
-      email,
-      password,
-    },
-  );
+  const response = await axios.post<LoginResponse>("/auth/login", {
+    email,
+    password,
+  });
 
   return response.data.data.user;
 };
 
 export const getCurrentUser = async (): Promise<User> => {
-  const response =
-    await axios.get<CurrentUserResponse>(
-      "/auth/user",
-    );
-
+  const response = await axios.get<CurrentUserResponse>("/auth/user");
   return response.data.data.user;
+};
+
+export const logoutUser = async (): Promise<void> => {
+  await axios.post("/auth/logout");
+};
+
+export const logoutAllUsers = async (): Promise<void> => {
+  await axios.post("/auth/logout-all");
 };

@@ -4,7 +4,8 @@ export interface DirectoryI {
   _id: mongoose.Types.ObjectId;
   name: string;
   parentDirectoryId: mongoose.Types.ObjectId | null;
-  userId: mongoose.Types.ObjectId;
+  userId: mongoose.Types.ObjectId;     // Owner of the directory.
+  createdBy: mongoose.Types.ObjectId; // User who created the directory.
   size: number;
   deletedAt: Date | null;
   createdAt?: Date;
@@ -33,6 +34,11 @@ const directorySchema = new Schema<DirectoryI>(
       ref: "User",
       required: true,
     },
+     createdBy: {
+      type: Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+    },
     deletedAt: {
       type: Date,
       default: null,
@@ -43,6 +49,13 @@ const directorySchema = new Schema<DirectoryI>(
     strict: "throw",
   },
 );
+
+directorySchema.index({
+  userId: 1,
+  parentDirectoryId: 1,
+  deletedAt: 1,
+  updatedAt: -1,
+});
 
 const Directory = model<DirectoryI>("Directory", directorySchema);
 

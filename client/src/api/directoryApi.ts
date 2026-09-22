@@ -1,23 +1,32 @@
 import axios from "./axios";
 import type {
   CreateDirectoryResponse,
-  DeleteDirectoryResponse,
+  DirectoryBreadcrumbsResponse,
+  DirectoryMutationResponse,
   DirectoryResponse,
+  DirectoryRestoreResponse,
+  Directory,
   RenameDirectoryResponse,
 } from "../types/directory";
 
 export const getDirectoryItems = async (
-  directoryId?: string,
+  directoryId: string,
 ): Promise<DirectoryResponse> => {
-  const url = directoryId
-    ? `/directory/${directoryId}`
-    : "/directory";
-
   const response = await axios.get<{
     success: boolean;
     message: string;
     data: DirectoryResponse;
-  }>(url);
+  }>(`/directories/${directoryId}`);
+
+  return response.data.data;
+};
+
+export const getDirectoryBreadcrumbs = async (
+  directoryId: string,
+) => {
+  const response = await axios.get<DirectoryBreadcrumbsResponse>(
+    `/directories/breadcrumbs/${directoryId}`,
+  );
 
   return response.data.data;
 };
@@ -28,15 +37,11 @@ export const createFolder = async ({
 }: {
   parentDirectoryId: string;
   name: string;
-}) => {
-  const response =
-    await axios.post<CreateDirectoryResponse>(
-      "/directory",
-      {
-        parentDirectoryId,
-        name,
-      },
-    );
+}): Promise<Directory> => {
+  const response = await axios.post<CreateDirectoryResponse>(
+    `/directories/${parentDirectoryId}`,
+    { name },
+  );
 
   return response.data.data.directory;
 };
@@ -44,14 +49,11 @@ export const createFolder = async ({
 export const renameDirectory = async (
   directoryId: string,
   name: string,
-) => {
-  const response =
-    await axios.patch<RenameDirectoryResponse>(
-      `/directory/${directoryId}`,
-      {
-        name,
-      },
-    );
+): Promise<Directory> => {
+  const response = await axios.patch<RenameDirectoryResponse>(
+    `/directories/${directoryId}`,
+    { name },
+  );
 
   return response.data.data.directory;
 };
@@ -59,10 +61,39 @@ export const renameDirectory = async (
 export const deleteDirectory = async (
   directoryId: string,
 ) => {
-  const response =
-    await axios.delete<DeleteDirectoryResponse>(
-      `/directory/${directoryId}`,
-    );
+  const response = await axios.delete<DirectoryMutationResponse>(
+    `/directories/${directoryId}`,
+  );
+
+  return response.data.data;
+};
+
+export const getDirectoryTrash = async (): Promise<Directory[]> => {
+  const response = await axios.get<{
+    success: boolean;
+    message: string;
+    data: Directory[];
+  }>("/directories/trash");
+
+  return response.data.data;
+};
+
+export const restoreDirectory = async (
+  directoryId: string,
+): Promise<Directory> => {
+  const response = await axios.post<DirectoryRestoreResponse>(
+    `/directories/restore/${directoryId}`,
+  );
 
   return response.data.data.directory;
+};
+
+export const permanentlyDeleteDirectory = async (
+  directoryId: string,
+) => {
+  const response = await axios.delete<DirectoryMutationResponse>(
+    `/directories/permanent/${directoryId}`,
+  );
+
+  return response.data.data;
 };

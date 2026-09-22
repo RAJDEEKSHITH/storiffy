@@ -61,3 +61,27 @@ export const enforceSessionLimit = async (userId: string) => {
 };
 
 export const SESSION_TTL_MS = SESSION_TTL * 1000;
+
+export const deleteAllSessionsForUser = async (
+  userId: string,
+): Promise<number> => {
+  const sessions = await redisClient.ft.search(
+    "userIdIdx",
+    `@userId:{${userId}}`,
+    {
+      RETURN: [],
+    },
+  );
+
+  const sessionKeys = sessions.documents.map(
+    (session) => session.id,
+  );
+
+  if (sessionKeys.length === 0) {
+    return 0;
+  }
+
+  await redisClient.del(sessionKeys);
+
+  return sessionKeys.length;
+};

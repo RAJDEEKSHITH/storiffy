@@ -5,6 +5,7 @@ import {
   login,
   getCurrentUser,
   logoutUser,
+  logoutAllUsers,
 } from "../controllers/auth.controller.js";
 
 import { authenticate } from "../middlewares/auth.middleware.js";
@@ -23,4 +24,5 @@ router.get("/user", authenticate, getCurrentUser);
 
 router.post("/logout", authenticate, logoutUser);
 
+router.post( "/logout-all", authenticate, logoutAllUsers);
 export default router;
