@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useDispatch } from "react-redux";
 
 import { loginUser } from "../api/authApi";
@@ -21,6 +21,7 @@ import { Label } from "../components/ui/label";
 const Login = () => {
   const dispatch = useDispatch<AppDispatch>();
   const navigate = useNavigate();
+  const location = useLocation();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
@@ -44,10 +45,11 @@ const Login = () => {
         type: "success",
       });
 
-      navigate(
-        `/${user.rootDirectoryId}`,
-        { replace: true },
-      );
+      const destination =
+        (location.state as { from?: string } | null)?.from ??
+        `/${user.rootDirectoryId}`;
+
+      navigate(destination, { replace: true });
     } catch (error) {
       console.error("Login failed:", error);
       toast.add({
@@ -129,6 +131,7 @@ const Login = () => {
             Don&apos;t have an account?{" "}
             <Link
               to="/register"
+              state={location.state}
               className="font-medium text-blue-600 hover:underline"
             >
               Create an account

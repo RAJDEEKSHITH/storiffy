@@ -5,6 +5,7 @@ import {
   Share2,
   Star,
   Trash2,
+  Users,
   X,
 } from "lucide-react";
 import type { User } from "../types/user";
@@ -22,6 +23,9 @@ interface SidebarProps {
   onRecent: () => void;
   onStarred: () => void;
   onTrash: () => void;
+  onSharedByMe?: () => void;
+  activeSharedByMe?: boolean;
+  activeSharedWithMe?: boolean;
 }
 
 const Sidebar = ({
@@ -34,6 +38,9 @@ const Sidebar = ({
   onRecent,
   onStarred,
   onTrash,
+  onSharedByMe = () => undefined,
+  activeSharedByMe = false,
+  activeSharedWithMe = false,
 }: SidebarProps) => {
   const handleNavigation = (callback: () => void) => {
     callback();
@@ -53,34 +60,18 @@ const Sidebar = ({
 
       <aside
         className={`fixed inset-y-0 left-0 z-50 flex w-64 flex-col border-r bg-white transition-transform duration-200 lg:translate-x-0 ${
-          mobileOpen
-            ? "translate-x-0"
-            : "-translate-x-full"
+          mobileOpen ? "translate-x-0" : "-translate-x-full"
         }`}
       >
         <div className="flex h-16 shrink-0 items-center justify-between border-b px-4">
-          <button
-            type="button"
-            onClick={() =>
-              handleNavigation(onHome)
-            }
-            className="flex items-center gap-3"
-          >
+          <button type="button" onClick={() => handleNavigation(onHome)} className="flex items-center gap-3">
             <span className="flex size-9 items-center justify-center rounded-lg bg-blue-600 text-white shadow-sm">
               <HardDrive className="size-5" />
             </span>
-            <span className="text-base font-semibold tracking-tight text-slate-900">
-              OmniSpace
-            </span>
+            <span className="text-base font-semibold tracking-tight text-slate-900">OmniSpace</span>
           </button>
 
-          <Button
-            variant="ghost"
-            size="icon"
-            className="lg:hidden"
-            onClick={onCloseMobile}
-            aria-label="Close menu"
-          >
+          <Button variant="ghost" size="icon" className="lg:hidden" onClick={onCloseMobile} aria-label="Close menu">
             <X className="size-4" />
           </Button>
         </div>
@@ -90,13 +81,9 @@ const Sidebar = ({
             <Button
               variant="ghost"
               className={`w-full justify-start gap-3 ${
-                activeRoot
-                  ? "bg-blue-50 text-blue-600 hover:bg-blue-100"
-                  : "text-slate-600 hover:bg-slate-50"
+                activeRoot ? "bg-blue-50 text-blue-600 hover:bg-blue-100" : "text-slate-600 hover:bg-slate-50"
               }`}
-              onClick={() =>
-                handleNavigation(onHome)
-              }
+              onClick={() => handleNavigation(onHome)}
             >
               <HomeIcon className="size-4" />
               <span>Home</span>
@@ -104,47 +91,42 @@ const Sidebar = ({
 
             <Button
               variant="ghost"
-              className="w-full justify-start gap-3 text-slate-600 hover:bg-slate-50 hover:text-slate-900"
-              onClick={() =>
-                handleNavigation(onSharedWithMe)
-              }
+              className={`w-full justify-start gap-3 ${
+                activeSharedByMe ? "bg-blue-50 text-blue-600 hover:bg-blue-100" : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+              }`}
+              onClick={() => handleNavigation(onSharedByMe)}
             >
               <Share2 className="size-4" />
-              Shared with me
-            </Button>
-
-            <Button
-              variant="ghost"
-              className="w-full justify-start gap-3 text-slate-600 hover:bg-slate-50 hover:text-slate-900"
-              onClick={() =>
-                handleNavigation(onRecent)
-              }
-            >
-              <Clock3 className="size-4" />
-              Recent
-            </Button>
-
-            <Button
-              variant="ghost"
-              className="w-full justify-start gap-3 text-slate-600 hover:bg-slate-50 hover:text-slate-900"
-              onClick={() =>
-                handleNavigation(onStarred)
-              }
-            >
-              <Star className="size-4" />
-              Starred
+              Shared by me
             </Button>
 
             <Button
               variant="ghost"
               className={`w-full justify-start gap-3 ${
-                activeTrash
-                  ? "bg-blue-50 text-blue-600 hover:bg-blue-100"
-                  : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+                activeSharedWithMe ? "bg-blue-50 text-blue-600 hover:bg-blue-100" : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
               }`}
-              onClick={() =>
-                handleNavigation(onTrash)
-              }
+              onClick={() => handleNavigation(onSharedWithMe)}
+            >
+              <Users className="size-4" />
+              Shared with me
+            </Button>
+
+            {/* <Button variant="ghost" className="w-full justify-start gap-3 text-slate-600 hover:bg-slate-50 hover:text-slate-900" onClick={() => handleNavigation(onRecent)}>
+              <Clock3 className="size-4" />
+              Recent
+            </Button>
+
+            <Button variant="ghost" className="w-full justify-start gap-3 text-slate-600 hover:bg-slate-50 hover:text-slate-900" onClick={() => handleNavigation(onStarred)}>
+              <Star className="size-4" />
+              Starred
+            </Button> */}
+
+            <Button
+              variant="ghost"
+              className={`w-full justify-start gap-3 ${
+                activeTrash ? "bg-blue-50 text-blue-600 hover:bg-blue-100" : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+              }`}
+              onClick={() => handleNavigation(onTrash)}
             >
               <Trash2 className="size-4" />
               Trash

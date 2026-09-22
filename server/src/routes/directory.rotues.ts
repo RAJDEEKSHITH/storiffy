@@ -23,8 +23,9 @@ import {
   directoryParamsSchema,
   renameDirectorySchema,
 } from "../validators/directory.validator.js";
+import { emptyTrashController } from "../controllers/trash.controller.js";
 
-// Base path: /api/directory
+// Base path: /api/directories
 
 const router = Router();
 
@@ -39,6 +40,17 @@ router.use(authenticate);
 router.get(
   "/trash",
   getDirectoryTrash,
+);
+
+/*
+|--------------------------------------------------------------------------
+| Empty trash
+|--------------------------------------------------------------------------
+*/
+
+router.delete(
+  "/trash/empty",
+  emptyTrashController,
 );
 
 /*

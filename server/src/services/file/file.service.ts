@@ -22,6 +22,21 @@ const MULTIPART_THRESHOLD = 100 * 1024 * 1024; // 100 MB
 
 const MULTIPART_PART_SIZE = 10 * 1024 * 1024; // 10 MB
 
+// Temporary upload records receive a server-side lease. This is the
+// protection against browser/tab close, network loss, crashes, and clients
+// that never call the complete/abort endpoint.
+export const UPLOAD_LEASE_MS = 2 * 60 * 60 * 1000; // 2 hours
+const CLEANUP_RETRY_LEASE_MS = 5 * 60 * 1000; // 5 minutes
+
+const getUploadLeaseExpiry = () =>
+  new Date(Date.now() + UPLOAD_LEASE_MS);
+
+const getCleanupRetryLeaseExpiry = () =>
+  new Date(Date.now() + CLEANUP_RETRY_LEASE_MS);
+
+const getUploadLeaseExpiryFrom = (date: Date) =>
+  new Date(date.getTime() + UPLOAD_LEASE_MS);
+
 // to check valid directory
 const validateDirectory = async (
   directoryId: string,
@@ -113,68 +128,552 @@ const reserveUserStorage = async ({
 };
 
 
-// Release storage reserved by failed upload
-const releaseFailedUploadStorage =
-  async ({
-    userId,
-    fileId,
-  }: {
-    userId: string;
-    fileId: string;
-  }) => {
-    const session =
-      await mongoose.startSession();
-
-    try {
-      await session.withTransaction(
-        async () => {
-          const file =
-            await File.findOneAndDelete(
-              {
-                _id: fileId,
-                userId,
-                status: "uploading",
-                deletedAt: null,
-              },
-              {
-                session,
-              },
-            );
-
-          if (!file) {
-            return;
-          }
-
-          await User.updateOne(
-            {
-              _id: userId,
-            },
-            {
-              $inc: {
-                storageUsedInBytes:
-                  -file.size,
-              },
-            },
-            {
-              session,
-            },
-          );
-        },
-      );
-    } finally {
-      await session.endSession();
-    }
-  };
-
 /*
 |--------------------------------------------------------------------------
-| Cleanup failed upload
+| Upload lifecycle helpers
 |--------------------------------------------------------------------------
 |
-| S3 cleanup must succeed before the storage reservation
-| is released.
+| A browser -> S3 upload cannot reliably notify this API when the browser
+| closes, the tab crashes, the network disappears, or the process dies.
+| uploadExpiresAt therefore acts as a lease for every temporary upload.
+|
+| State machine:
+|
+| uploading   -> finalizing -> ready
+| uploading   -> failed    -> deleted
+| finalizing  -> failed    -> deleted
+|
+| Completion and cleanup claim the record with conditional MongoDB updates.
+| That makes the operation race-safe when two requests/workers run at once.
 |--------------------------------------------------------------------------
 */
+
+const isS3NotFoundError = (error: unknown) => {
+  const value = error as {
+    name?: string;
+    Code?: string;
+    $metadata?: { httpStatusCode?: number };
+  } | null;
+
+  return (
+    value?.name === "NotFound" ||
+    value?.name === "NoSuchKey" ||
+    value?.name === "NoSuchUpload" ||
+    value?.Code === "NoSuchKey" ||
+    value?.Code === "NoSuchUpload" ||
+    value?.$metadata?.httpStatusCode === 404
+  );
+};
+
+const cleanupS3ForUpload = async ({
+  storageKey,
+  uploadId,
+}: {
+  storageKey: string;
+  uploadId: string | null;
+}) => {
+  try {
+    if (uploadId) {
+      await abortMultipartUpload({
+        key: storageKey,
+        uploadId,
+      });
+    } else {
+      await deleteS3Object(storageKey);
+    }
+  } catch (error) {
+    // The desired S3 state is already absent.
+    if (!isS3NotFoundError(error)) {
+      throw error;
+    }
+  }
+};
+
+const markUploadFailed = async ({
+  userId,
+  fileId,
+}: {
+  userId: string;
+  fileId: string;
+}) => {
+  return File.findOneAndUpdate(
+    {
+      _id: fileId,
+      userId,
+      deletedAt: null,
+      status: {
+        $in: ["uploading", "finalizing"],
+      },
+    },
+    {
+      $set: {
+        status: "failed",
+        uploadExpiresAt: getCleanupRetryLeaseExpiry(),
+      },
+    },
+    {
+      returnDocument: "after",
+    },
+  ).lean();
+};
+
+const deleteFailedUploadAndReleaseStorage = async ({
+  userId,
+  fileId,
+}: {
+  userId: string;
+  fileId: string;
+}) => {
+  const session = await mongoose.startSession();
+
+  try {
+    await session.withTransaction(async () => {
+      const deletedFile = await File.findOneAndDelete(
+        {
+          _id: fileId,
+          userId,
+          status: "failed",
+          deletedAt: null,
+        },
+        { session },
+      );
+
+      if (!deletedFile) {
+        return;
+      }
+
+      await User.updateOne(
+        {
+          _id: userId,
+        },
+        {
+          $inc: {
+            storageUsedInBytes: -deletedFile.size,
+          },
+        },
+        { session },
+      );
+    });
+  } finally {
+    await session.endSession();
+  }
+};
+
+const cleanupClaimedFailedUpload = async ({
+  userId,
+  fileId,
+  storageKey,
+  uploadId,
+}: {
+  userId: string;
+  fileId: string;
+  storageKey: string;
+  uploadId: string | null;
+}) => {
+  await cleanupS3ForUpload({
+    storageKey,
+    uploadId,
+  });
+
+  await deleteFailedUploadAndReleaseStorage({
+    userId,
+    fileId,
+  });
+};
+
+const getReadyUploadResult = async ({
+  userId,
+  fileId,
+}: {
+  userId: string;
+  fileId: string;
+}) => {
+  const file = await File.findOne({
+    _id: fileId,
+    userId,
+    status: "ready",
+    deletedAt: null,
+  }).lean();
+
+  if (!file) {
+    throw new AppError("File not found", 404);
+  }
+
+  const [directory, user] = await Promise.all([
+    Directory.findOne({
+      _id: file.directoryId,
+      userId,
+      deletedAt: null,
+    })
+      .select("size")
+      .lean(),
+
+    User.findById(userId)
+      .select("storageUsedInBytes")
+      .lean(),
+  ]);
+
+  if (!directory || !user) {
+    throw new AppError(
+      "Upload state is inconsistent",
+      500,
+    );
+  }
+
+  return {
+    fileId: file._id.toString(),
+    name: file.name,
+    mimeType: file.mimeType,
+    size: file.size,
+    status: "ready" as const,
+    storageUsedInBytes: user.storageUsedInBytes,
+    directorySize: directory.size,
+  };
+};
+
+/*
+ * A stale finalizing record is claimed by extending its lease. While the
+ * lease is fresh, completion requests are rejected, so this worker owns the
+ * recovery attempt.
+ */
+const claimExpiredFinalizingUpload = async ({
+  userId,
+  fileId,
+}: {
+  userId: string;
+  fileId: string;
+}) => {
+  const now = new Date();
+
+  return File.findOneAndUpdate(
+    {
+      _id: fileId,
+      userId,
+      status: "finalizing",
+      deletedAt: null,
+      uploadExpiresAt: {
+        $lte: now,
+      },
+    },
+    {
+      $set: {
+        uploadExpiresAt: getUploadLeaseExpiryFrom(now),
+      },
+    },
+    {
+      returnDocument: "after",
+    },
+  ).lean();
+};
+
+/*
+ * Recover a finalizing upload after its lease expires.
+ *
+ * - Valid S3 object -> finalize.
+ * - Missing S3 object -> release reservation.
+ * - Transient S3 failure -> keep the record and retry later.
+ * - Invalid size -> delete object and release reservation.
+ */
+export const recoverFinalizingUpload = async ({
+  userId,
+  fileId,
+}: {
+  userId: string;
+  fileId: string;
+}) => {
+  const file = await claimExpiredFinalizingUpload({
+    userId,
+    fileId,
+  });
+
+  if (!file) {
+    return false;
+  }
+
+  let metadata;
+
+  try {
+    metadata = await getS3FileMetaData(
+      file.storageKey,
+    );
+  } catch (error) {
+    if (!isS3NotFoundError(error)) {
+      await File.updateOne(
+        {
+          _id: fileId,
+          userId,
+          status: "finalizing",
+          deletedAt: null,
+        },
+        {
+          $set: {
+            uploadExpiresAt: getUploadLeaseExpiry(),
+          },
+        },
+      );
+
+      throw error;
+    }
+
+    const failed = await markUploadFailed({
+      userId,
+      fileId,
+    });
+
+    if (failed) {
+      await deleteFailedUploadAndReleaseStorage({
+        userId,
+        fileId,
+      });
+    }
+
+    return true;
+  }
+
+  if (metadata.ContentLength !== file.size) {
+    const failed = await markUploadFailed({
+      userId,
+      fileId,
+    });
+
+    if (failed) {
+      await cleanupClaimedFailedUpload({
+        userId,
+        fileId,
+        storageKey: file.storageKey,
+        uploadId: file.uploadId,
+      });
+    }
+
+    return true;
+  }
+
+  return finalizeVerifiedFile({
+    userId,
+    fileId,
+  });
+};
+
+/*
+ * Recover an expired uploading record. This first claims it by changing the
+ * state to finalizing. That same state is used by normal completion, so the
+ * cleanup worker and a completion request cannot both own the record.
+ */
+export const cleanupExpiredUpload = async ({
+  userId,
+  fileId,
+}: {
+  userId: string;
+  fileId: string;
+}) => {
+  const now = new Date();
+
+  const staleFailed = await File.findOneAndUpdate(
+    {
+      _id: fileId,
+      userId,
+      status: "failed",
+      deletedAt: null,
+      uploadExpiresAt: {
+        $lte: now,
+      },
+    },
+    {
+      $set: {
+        uploadExpiresAt: getCleanupRetryLeaseExpiry(),
+      },
+    },
+    {
+      returnDocument: "after",
+    },
+  ).lean();
+
+  if (staleFailed) {
+    await cleanupClaimedFailedUpload({
+      userId,
+      fileId,
+      storageKey: staleFailed.storageKey,
+      uploadId: staleFailed.uploadId,
+    });
+
+    return true;
+  }
+
+  const staleUploading = await File.findOneAndUpdate(
+    {
+      _id: fileId,
+      userId,
+      status: "uploading",
+      deletedAt: null,
+      uploadExpiresAt: {
+        $lte: now,
+      },
+    },
+    {
+      $set: {
+        status: "finalizing",
+        uploadExpiresAt: getUploadLeaseExpiryFrom(now),
+      },
+    },
+    {
+      returnDocument: "after",
+    },
+  ).lean();
+
+  if (staleUploading) {
+    let metadata;
+
+    try {
+      metadata = await getS3FileMetaData(
+        staleUploading.storageKey,
+      );
+    } catch (error) {
+      if (!isS3NotFoundError(error)) {
+        await File.updateOne(
+          {
+            _id: fileId,
+            userId,
+            status: "finalizing",
+            deletedAt: null,
+          },
+          {
+            $set: {
+              uploadExpiresAt: getUploadLeaseExpiry(),
+            },
+          },
+        );
+
+        throw error;
+      }
+
+      const failed = await markUploadFailed({
+        userId,
+        fileId,
+      });
+
+      if (failed) {
+        await cleanupClaimedFailedUpload({
+          userId,
+          fileId,
+          storageKey: staleUploading.storageKey,
+          uploadId: staleUploading.uploadId,
+        });
+      }
+
+      return true;
+    }
+
+    if (
+      metadata.ContentLength !==
+      staleUploading.size
+    ) {
+      const failed = await markUploadFailed({
+        userId,
+        fileId,
+      });
+
+      if (failed) {
+        await cleanupClaimedFailedUpload({
+          userId,
+          fileId,
+          storageKey: staleUploading.storageKey,
+          uploadId: staleUploading.uploadId,
+        });
+      }
+
+      return true;
+    }
+
+    await finalizeVerifiedFile({
+      userId,
+      fileId,
+    });
+
+    return true;
+  }
+
+  const staleFinalizing = await claimExpiredFinalizingUpload({
+    userId,
+    fileId,
+  });
+
+  if (staleFinalizing) {
+    let metadata;
+
+    try {
+      metadata = await getS3FileMetaData(
+        staleFinalizing.storageKey,
+      );
+    } catch (error) {
+      if (!isS3NotFoundError(error)) {
+        await File.updateOne(
+          {
+            _id: fileId,
+            userId,
+            status: "finalizing",
+            deletedAt: null,
+          },
+          {
+            $set: {
+              uploadExpiresAt: getUploadLeaseExpiry(),
+            },
+          },
+        );
+
+        throw error;
+      }
+
+      const failed = await markUploadFailed({
+        userId,
+        fileId,
+      });
+
+      if (failed) {
+        await deleteFailedUploadAndReleaseStorage({
+          userId,
+          fileId,
+        });
+      }
+
+      return true;
+    }
+
+    if (
+      metadata.ContentLength !==
+      staleFinalizing.size
+    ) {
+      const failed = await markUploadFailed({
+        userId,
+        fileId,
+      });
+
+      if (failed) {
+        await cleanupClaimedFailedUpload({
+          userId,
+          fileId,
+          storageKey: staleFinalizing.storageKey,
+          uploadId: staleFinalizing.uploadId,
+        });
+      }
+
+      return true;
+    }
+
+    await finalizeVerifiedFile({
+      userId,
+      fileId,
+    });
+
+    return true;
+  }
+
+  return false;
+};
+
+/*
+ * Explicit abort and definitive verification failures use this helper after
+ * first changing the record to status=failed.
+ */
 const cleanupFailedUpload = async ({
   userId,
   fileId,
@@ -186,35 +685,13 @@ const cleanupFailedUpload = async ({
   storageKey: string;
   uploadId: string | null;
 }) => {
-  try {
-    if (uploadId) {
-      await abortMultipartUpload({
-        key: storageKey,
-        uploadId,
-      });
-    } else {
-      await deleteS3Object(
-        storageKey,
-      );
-    }
-  } catch (error) {
-    console.error(
-      "Failed to clean up failed upload from S3:",
-      error,
-    );
-
-    throw new AppError(
-      "Failed to clean up failed upload",
-      500,
-    );
-  }
-
-  await releaseFailedUploadStorage({
+  await cleanupClaimedFailedUpload({
     userId,
     fileId,
+    storageKey,
+    uploadId,
   });
 };
-
 
 // Get signed CloudFront URL
 export const getFileSignedUrl = async ({
@@ -266,12 +743,14 @@ export const initiateSingleUpload =
     name,
     size,
     mimeType,
+    createdBy = userId,
   }: {
     userId: string;
     directoryId: string;
     name: string;
     size: number;
     mimeType: string;
+    createdBy?: string;
   }) => {
     await validateDirectory(
       directoryId,
@@ -306,12 +785,14 @@ export const initiateSingleUpload =
                 _id: fileId,
                 name,
                 userId,
+                createdBy,
                 directoryId,
                 storageKey,
                 mimeType,
                 size,
                 status: "uploading",
                 uploadId: null,
+                uploadExpiresAt: getUploadLeaseExpiry(),
                 deletedAt: null,
               },
             ],
@@ -340,20 +821,21 @@ export const initiateSingleUpload =
       };
     } catch (error) {
       /*
-       * S3 URL generation failed after storage
-       * was reserved.
+       * S3 URL generation failed after storage was reserved. Mark the
+       * temporary record failed and release the reservation immediately.
+       * The operation is idempotent because only an uploading/finalizing
+       * record can be claimed by markUploadFailed().
        */
-      try {
-        await releaseFailedUploadStorage({
+      const failed = await markUploadFailed({
+        userId,
+        fileId: fileId.toString(),
+      });
+
+      if (failed) {
+        await deleteFailedUploadAndReleaseStorage({
           userId,
-          fileId:
-            fileId.toString(),
+          fileId: fileId.toString(),
         });
-      } catch (cleanupError) {
-        console.error(
-          "Failed to release storage after single upload initiation failure:",
-          cleanupError,
-        );
       }
 
       throw error;
@@ -370,12 +852,14 @@ export const initiateMultipartUploadService =
     name,
     size,
     mimeType,
+    createdBy = userId,
   }: {
     userId: string;
     directoryId: string;
     name: string;
     size: number;
     mimeType: string;
+    createdBy?: string;
   }) => {
     await validateDirectory(
       directoryId,
@@ -419,12 +903,14 @@ export const initiateMultipartUploadService =
                   _id: fileId,
                   name,
                   userId,
+                  createdBy,
                   directoryId,
                   storageKey,
                   mimeType,
                   size,
                   status: "uploading",
                   uploadId,
+                  uploadExpiresAt: getUploadLeaseExpiry(),
                   deletedAt: null,
                 },
               ],
@@ -488,11 +974,14 @@ export const getMultipartPartUploadUrl =
       userId,
       status: "uploading",
       deletedAt: null,
+      uploadExpiresAt: {
+        $gt: new Date(),
+      },
     }).lean();
 
     if (!file) {
       throw new AppError(
-        "Upload not found",
+        "Upload not found or expired",
         404,
       );
     }
@@ -511,9 +1000,7 @@ export const getMultipartPartUploadUrl =
       );
 
     if (
-      !Number.isInteger(
-        partNumber,
-      ) ||
+      !Number.isInteger(partNumber) ||
       partNumber < 1 ||
       partNumber > totalParts
     ) {
@@ -523,11 +1010,41 @@ export const getMultipartPartUploadUrl =
       );
     }
 
+    // Each successful part-URL request proves that the multipart upload is
+    // still active, so renew its lease.
+    const renewed =
+      await File.findOneAndUpdate(
+        {
+          _id: file._id,
+          userId,
+          status: "uploading",
+          deletedAt: null,
+          uploadExpiresAt: {
+            $gt: new Date(),
+          },
+        },
+        {
+          $set: {
+            uploadExpiresAt:
+              getUploadLeaseExpiry(),
+          },
+        },
+        {
+          returnDocument: "after",
+        },
+      ).lean();
+
+    if (!renewed?.uploadId) {
+      throw new AppError(
+        "Upload not found or expired",
+        404,
+      );
+    }
+
     const uploadUrl =
       await generateMultipartPartUrl({
-        key: file.storageKey,
-        uploadId:
-          file.uploadId,
+        key: renewed.storageKey,
+        uploadId: renewed.uploadId,
         partNumber,
       });
 
@@ -542,19 +1059,11 @@ export const getMultipartPartUploadUrl =
 | Finalize verified file
 |--------------------------------------------------------------------------
 |
-| IMPORTANT:
+| The upload must already be claimed as finalizing.
 |
-| User storage was already reserved during initiation.
-|
-| Therefore completion does NOT increase user storage.
-|
-| Only:
-|
-| uploading -> ready
-|
-| and:
-|
-| directory.size += file.size
+| User storage was reserved during initiation, so completion does not
+| increment storage again. It only changes state to ready and increases the
+| direct parent's directory size inside the same transaction.
 |--------------------------------------------------------------------------
 */
 
@@ -566,8 +1075,7 @@ const finalizeVerifiedFile =
     userId: string;
     fileId: string;
   }) => {
-    const session =
-      await mongoose.startSession();
+    const session = await mongoose.startSession();
 
     let result:
       | {
@@ -582,176 +1090,96 @@ const finalizeVerifiedFile =
       | null = null;
 
     try {
-      await session.withTransaction(
-        async () => {
-          const file =
-            await File.findOne({
-              _id: fileId,
+      await session.withTransaction(async () => {
+        const file = await File.findOne({
+          _id: fileId,
+          userId,
+          status: "finalizing",
+          deletedAt: null,
+        }).session(session);
+
+        if (!file) {
+          throw new AppError(
+            "Upload is not available for finalization",
+            409,
+          );
+        }
+
+        const updatedFile =
+          await File.findOneAndUpdate(
+            {
+              _id: file._id,
+              userId,
+              status: "finalizing",
+              deletedAt: null,
+            },
+            {
+              $set: {
+                status: "ready",
+                uploadId: null,
+                uploadExpiresAt: null,
+              },
+            },
+            {
+              returnDocument: "after",
+              session,
+            },
+          );
+
+        if (!updatedFile) {
+          throw new AppError(
+            "File upload has already been finalized",
+            409,
+          );
+        }
+
+        const directory =
+          await Directory.findOneAndUpdate(
+            {
+              _id: file.directoryId,
               userId,
               deletedAt: null,
-            }).session(session);
-
-          if (!file) {
-            throw new AppError(
-              "Upload not found",
-              404,
-            );
-          }
-
-          /*
-           * Idempotency:
-           *
-           * The previous completion request may have committed
-           * successfully while its HTTP response was lost.
-           * A retry must return success without incrementing
-           * directory size again.
-           */
-          if (file.status === "ready") {
-            const directory =
-              await Directory.findOne({
-                _id: file.directoryId,
-                userId,
-                deletedAt: null,
-              })
-                .select("size")
-                .session(session);
-
-            const user =
-              await User.findById(userId)
-                .select("storageUsedInBytes")
-                .session(session);
-
-            if (!directory) {
-              throw new AppError(
-                "Directory not found",
-                404,
-              );
-            }
-
-            if (!user) {
-              throw new AppError(
-                "User not found",
-                404,
-              );
-            }
-
-            result = {
-              fileId: file._id.toString(),
-              name: file.name,
-              mimeType: file.mimeType,
-              size: file.size,
-              status: "ready",
-              storageUsedInBytes:
-                user.storageUsedInBytes,
-              directorySize: directory.size,
-            };
-
-            return;
-          }
-
-          if (file.status !== "uploading") {
-            throw new AppError(
-              "Upload cannot be completed",
-              409,
-            );
-          }
-
-          /*
-           * Atomic status transition.
-           *
-           * Prevents storage/directory size from
-           * being updated twice if completion is
-           * accidentally called twice.
-           */
-          const updatedFile =
-            await File.findOneAndUpdate(
-              {
-                _id: file._id,
-                userId,
-                status: "uploading",
-                deletedAt: null,
+            },
+            {
+              $inc: {
+                size: file.size,
               },
-              {
-                $set: {
-                  status: "ready",
-                  uploadId: null,
-                },
-              },
-              {
-                returnDocument : "after",
-                session,
-              },
-            );
+            },
+            {
+              returnDocument: "after",
+              session,
+            },
+          );
 
-          if (!updatedFile) {
-            throw new AppError(
-              "File upload has already been completed",
-              409,
-            );
-          }
+        if (!directory) {
+          throw new AppError(
+            "Directory not found",
+            404,
+          );
+        }
 
-          /*
-           * Directory size represents the size
-           * of ready files directly inside it.
-           */
-          const directory =
-            await Directory.findOneAndUpdate(
-              {
-                _id: file.directoryId,
-                userId,
-                deletedAt: null,
-              },
-              {
-                $inc: {
-                  size: file.size,
-                },
-              },
-              {
-                returnDocument : "after",
-                session,
-              },
-            );
+        const user = await User.findById(userId)
+          .select("storageUsedInBytes")
+          .session(session);
 
-          if (!directory) {
-            throw new AppError(
-              "Directory not found",
-              404,
-            );
-          }
+        if (!user) {
+          throw new AppError(
+            "User not found",
+            404,
+          );
+        }
 
-          const user =
-            await User.findById(
-              userId,
-            )
-              .select(
-                "storageUsedInBytes",
-              )
-              .session(session);
-
-          if (!user) {
-            throw new AppError(
-              "User not found",
-              404,
-            );
-          }
-
-          result = {
-            fileId:
-              updatedFile._id.toString(),
-            name:
-              updatedFile.name,
-            mimeType:
-              updatedFile.mimeType,
-            size:
-              updatedFile.size,
-            status: "ready",
-            storageUsedInBytes:
-              user.storageUsedInBytes,
-            directorySize:
-              directory.size,
-          };
-        },
-      );
+        result = {
+          fileId: updatedFile._id.toString(),
+          name: updatedFile.name,
+          mimeType: updatedFile.mimeType,
+          size: updatedFile.size,
+          status: "ready",
+          storageUsedInBytes:
+            user.storageUsedInBytes,
+          directorySize: directory.size,
+        };
+      });
     } finally {
       await session.endSession();
     }
@@ -765,6 +1193,80 @@ const finalizeVerifiedFile =
 
     return result;
   };
+
+const claimUploadForCompletion = async ({
+  userId,
+  fileId,
+}: {
+  userId: string;
+  fileId: string;
+}) => {
+  const now = new Date();
+
+  const claimed = await File.findOneAndUpdate(
+    {
+      _id: fileId,
+      userId,
+      status: "uploading",
+      deletedAt: null,
+      $or: [
+        {
+          uploadExpiresAt: {
+            $gt: now,
+          },
+        },
+        {
+          uploadExpiresAt: null,
+        },
+      ],
+    },
+    {
+      $set: {
+        status: "finalizing",
+        uploadExpiresAt:
+          getUploadLeaseExpiry(),
+      },
+    },
+    {
+      returnDocument: "after",
+    },
+  ).lean();
+
+  if (claimed) {
+    return claimed;
+  }
+
+  const existing = await File.findOne({
+    _id: fileId,
+    userId,
+    deletedAt: null,
+  })
+    .select("status")
+    .lean();
+
+  if (existing?.status === "ready") {
+    return "ready" as const;
+  }
+
+  if (existing?.status === "finalizing") {
+    throw new AppError(
+      "Upload completion is already in progress",
+      409,
+    );
+  }
+
+  if (existing?.status === "failed") {
+    throw new AppError(
+      "Upload has failed and is being cleaned up",
+      409,
+    );
+  }
+
+  throw new AppError(
+    "Upload has expired or is no longer available",
+    409,
+  );
+};
 
 /*
 |--------------------------------------------------------------------------
@@ -780,34 +1282,20 @@ export const completeSingleFileUpload =
     userId: string;
     fileId: string;
   }) => {
-    const file = await File.findOne({
-      _id: fileId,
-      userId,
-      deletedAt: null,
-    });
+    const claimed =
+      await claimUploadForCompletion({
+        userId,
+        fileId,
+      });
 
-    if (!file) {
-      throw new AppError(
-        "Upload not found",
-        404,
-      );
-    }
-
-    if (file.status === "ready") {
-      return finalizeVerifiedFile({
+    if (claimed === "ready") {
+      return getReadyUploadResult({
         userId,
         fileId,
       });
     }
 
-    if (file.status !== "uploading") {
-      throw new AppError(
-        "Upload cannot be completed",
-        409,
-      );
-    }
-
-    if (file.uploadId) {
+    if (claimed.uploadId) {
       throw new AppError(
         "This file is a multipart upload",
         400,
@@ -817,46 +1305,69 @@ export const completeSingleFileUpload =
     let metadata;
 
     try {
-      metadata =
-        await getS3FileMetaData(
-          file.storageKey,
-        );
+      metadata = await getS3FileMetaData(
+        claimed.storageKey,
+      );
     } catch (error) {
-      console.error(
-        "Failed to verify uploaded file:",
-        error,
+      if (isS3NotFoundError(error)) {
+        const failed =
+          await markUploadFailed({
+            userId,
+            fileId,
+          });
+
+        if (failed) {
+          await cleanupFailedUpload({
+            userId,
+            fileId,
+            storageKey:
+              claimed.storageKey,
+            uploadId: null,
+          });
+        }
+
+        throw new AppError(
+          "Uploaded file was not found in storage",
+          400,
+        );
+      }
+
+      await File.updateOne(
+        {
+          _id: fileId,
+          userId,
+          status: "finalizing",
+          deletedAt: null,
+        },
+        {
+          $set: {
+            uploadExpiresAt:
+              getUploadLeaseExpiry(),
+          },
+        },
       );
 
-      /*
-       * Do not delete the upload here. A transient network/AWS
-       * error can happen even though the S3 object is valid.
-       * Keep the reservation and allow the client to retry
-       * completion. Explicit abort/discard performs cleanup.
-       */
       throw new AppError(
         "Could not verify uploaded file. Please retry.",
         503,
       );
     }
 
-    if (
-      metadata.ContentLength !==
-      file.size
-    ) {
-      try {
+    if (metadata.ContentLength !== claimed.size) {
+      const failed =
+        await markUploadFailed({
+          userId,
+          fileId,
+        });
+
+      if (failed) {
         await cleanupFailedUpload({
           userId,
-          fileId:
-            file._id.toString(),
+          fileId,
           storageKey:
-            file.storageKey,
+            claimed.storageKey,
           uploadId: null,
         });
-      } catch (cleanupError) {
-        console.error(
-          "Failed to clean up invalid single upload:",
-          cleanupError,
-        );
       }
 
       throw new AppError(
@@ -890,34 +1401,20 @@ export const completeMultipartFileUpload =
       eTag: string;
     }[];
   }) => {
-    const file = await File.findOne({
-      _id: fileId,
-      userId,
-      deletedAt: null,
-    });
+    const claimed =
+      await claimUploadForCompletion({
+        userId,
+        fileId,
+      });
 
-    if (!file) {
-      throw new AppError(
-        "Upload not found",
-        404,
-      );
-    }
-
-    if (file.status === "ready") {
-      return finalizeVerifiedFile({
+    if (claimed === "ready") {
+      return getReadyUploadResult({
         userId,
         fileId,
       });
     }
 
-    if (file.status !== "uploading") {
-      throw new AppError(
-        "Upload cannot be completed",
-        409,
-      );
-    }
-
-    if (!file.uploadId) {
+    if (!claimed.uploadId) {
       throw new AppError(
         "This file is not a multipart upload",
         400,
@@ -926,13 +1423,11 @@ export const completeMultipartFileUpload =
 
     const totalParts =
       Math.ceil(
-        file.size /
+        claimed.size /
           MULTIPART_PART_SIZE,
       );
 
-    if (
-      parts.length !== totalParts
-    ) {
+    if (parts.length !== totalParts) {
       throw new AppError(
         `Expected ${totalParts} parts`,
         400,
@@ -1008,66 +1503,72 @@ export const completeMultipartFileUpload =
 
     try {
       await completeMultipartUpload({
-        key: file.storageKey,
-        uploadId: file.uploadId,
+        key: claimed.storageKey,
+        uploadId: claimed.uploadId,
         parts: orderedParts,
       });
     } catch (error) {
-      /*
-       * S3 may have completed the object even if
-       * the SDK request returned an error.
-       *
-       * Check the final object before deciding
-       * that completion failed.
-       */
-      console.error(
-        "Multipart completion returned an error:",
-        error,
-      );
-
+      // The S3 completion request can succeed while its HTTP response is
+      // lost. HEAD the final object before treating the operation as failed.
       try {
         const metadata =
           await getS3FileMetaData(
-            file.storageKey,
+            claimed.storageKey,
           );
 
         if (
           metadata.ContentLength !==
-          file.size
+          claimed.size
         ) {
           throw new Error(
             "Final S3 object size does not match",
           );
         }
       } catch {
+        await File.updateOne(
+          {
+            _id: fileId,
+            userId,
+            status: "finalizing",
+            deletedAt: null,
+          },
+          {
+            $set: {
+              uploadExpiresAt:
+                getUploadLeaseExpiry(),
+            },
+          },
+        );
+
         throw new AppError(
-          "Failed to complete multipart upload",
-          500,
+          "Failed to complete multipart upload. Please retry.",
+          503,
         );
       }
     }
 
-    /*
-     * Always verify the final object.
-     */
     let metadata;
 
     try {
-      metadata =
-        await getS3FileMetaData(
-          file.storageKey,
-        );
-    } catch (error) {
-      console.error(
-        "Multipart object verification failed:",
-        error,
+      metadata = await getS3FileMetaData(
+        claimed.storageKey,
+      );
+    } catch {
+      await File.updateOne(
+        {
+          _id: fileId,
+          userId,
+          status: "finalizing",
+          deletedAt: null,
+        },
+        {
+          $set: {
+            uploadExpiresAt:
+              getUploadLeaseExpiry(),
+          },
+        },
       );
 
-      /*
-       * Preserve the upload on verification/network failure.
-       * The client can safely retry completion. Explicit abort
-       * or discard is responsible for cleanup.
-       */
       throw new AppError(
         "Could not verify uploaded file. Please retry.",
         503,
@@ -1076,26 +1577,23 @@ export const completeMultipartFileUpload =
 
     if (
       metadata.ContentLength !==
-      file.size
+      claimed.size
     ) {
-      /*
-       * The object exists but is invalid.
-       */
-      try {
-        await deleteS3Object(
-          file.storageKey,
-        );
-
-        await releaseFailedUploadStorage({
+      const failed =
+        await markUploadFailed({
           userId,
-          fileId:
-            file._id.toString(),
+          fileId,
         });
-      } catch (cleanupError) {
-        console.error(
-          "Failed to clean up invalid multipart upload:",
-          cleanupError,
-        );
+
+      if (failed) {
+        await cleanupFailedUpload({
+          userId,
+          fileId,
+          storageKey:
+            claimed.storageKey,
+          uploadId:
+            claimed.uploadId,
+        });
       }
 
       throw new AppError(
@@ -1116,110 +1614,151 @@ export const completeMultipartFileUpload =
 |--------------------------------------------------------------------------
 */
 
-export const abortFileUpload =
-  async ({
-    userId,
-    fileId,
-  }: {
-    userId: string;
-    fileId: string;
-  }) => {
-    const file = await File.findOne({
+export const abortFileUpload = async ({
+  userId,
+  fileId,
+}: {
+  userId: string;
+  fileId: string;
+}) => {
+  /*
+   * Explicit abort is allowed to transition only an active upload.
+   * Do NOT use markUploadFailed() here because that helper also accepts
+   * "finalizing", which can race with a legitimate completion request.
+   */
+  const claimed = await File.findOneAndUpdate(
+    {
       _id: fileId,
       userId,
       status: "uploading",
       deletedAt: null,
-    });
+    },
+    {
+      $set: {
+        status: "failed",
+        uploadExpiresAt: getCleanupRetryLeaseExpiry(),
+      },
+    },
+    {
+      returnDocument: "after",
+    },
+  ).lean();
 
-    if (!file) {
-      throw new AppError(
-        "Upload not found",
-        404,
-      );
-    }
-
-    /*
-     * Clean S3 first.
-     */
+  if (claimed) {
     try {
-      if (file.uploadId) {
-        await abortMultipartUpload({
-          key: file.storageKey,
-          uploadId: file.uploadId,
-        });
-      } else {
-        await deleteS3Object(
-          file.storageKey,
-        );
-      }
+      await cleanupClaimedFailedUpload({
+        userId,
+        fileId,
+        storageKey: claimed.storageKey,
+        uploadId: claimed.uploadId,
+      });
     } catch (error) {
       console.error(
         "Failed to clean up upload in S3:",
         error,
       );
 
+      await File.updateOne(
+        {
+          _id: fileId,
+          userId,
+          status: "failed",
+          deletedAt: null,
+        },
+        {
+          $set: {
+            uploadExpiresAt: getCleanupRetryLeaseExpiry(),
+          },
+        },
+      );
+
       throw new AppError(
-        "Failed to abort upload",
+        "Failed to abort upload. Cleanup will be retried automatically.",
         500,
       );
     }
 
-    /*
-     * Delete File + release reserved storage
-     * atomically.
-     */
-    const session =
-      await mongoose.startSession();
+    return {
+      fileId: claimed._id.toString(),
+      status: "cancelled" as const,
+    };
+  }
 
+  const existing = await File.findOne({
+    _id: fileId,
+    userId,
+    deletedAt: null,
+  })
+    .select("_id status storageKey uploadId")
+    .lean();
+
+  if (!existing) {
+    throw new AppError(
+      "Upload not found",
+      404,
+    );
+  }
+
+  if (existing.status === "ready") {
+    return {
+      fileId,
+      status: "already-completed" as const,
+    };
+  }
+
+  if (existing.status === "finalizing") {
+    throw new AppError(
+      "Upload completion is already in progress",
+      409,
+    );
+  }
+
+  if (existing.status === "failed") {
     try {
-      await session.withTransaction(
-        async () => {
-          const deletedFile =
-            await File.findOneAndDelete(
-              {
-                _id: file._id,
-                userId,
-                status: "uploading",
-              },
-              {
-                session,
-              },
-            );
+      await cleanupClaimedFailedUpload({
+        userId,
+        fileId,
+        storageKey: existing.storageKey,
+        uploadId: existing.uploadId,
+      });
+    } catch (error) {
+      console.error(
+        "Failed to clean up failed upload:",
+        error,
+      );
 
-          if (!deletedFile) {
-            throw new AppError(
-              "Upload not found",
-              404,
-            );
-          }
-
-          await User.updateOne(
-            {
-              _id: userId,
-            },
-            {
-              $inc: {
-                storageUsedInBytes:
-                  -deletedFile.size,
-              },
-            },
-            {
-              session,
-            },
-          );
+      await File.updateOne(
+        {
+          _id: fileId,
+          userId,
+          status: "failed",
+          deletedAt: null,
+        },
+        {
+          $set: {
+            uploadExpiresAt: getCleanupRetryLeaseExpiry(),
+          },
         },
       );
-    } finally {
-      await session.endSession();
+
+      throw new AppError(
+        "Failed to discard upload. Cleanup will be retried automatically.",
+        500,
+      );
     }
 
     return {
-      fileId:
-        file._id.toString(),
-      status:
-        "cancelled" as const,
+      fileId,
+      status: "cancelled" as const,
     };
-  };
+  }
+
+  throw new AppError(
+    "Upload not found",
+    404,
+  );
+};
+
 
 /*
 |--------------------------------------------------------------------------
@@ -1633,3 +2172,221 @@ export const permanentlyDeleteFile =
         file.size,
     };
   };
+
+/*
+|--------------------------------------------------------------------------
+| Shared-editor compatibility wrappers
+|--------------------------------------------------------------------------
+|
+| restricted-share.service.ts works with two identities:
+|
+| ownerId  = resource owner
+| actorId  = authenticated editor
+|
+| Share authorization is performed before these functions are called.
+| The underlying upload operations intentionally continue to use ownerId
+| for File.userId / storage accounting.
+|--------------------------------------------------------------------------
+*/
+
+export const getMultipartPartUploadUrlAsCreator = async ({
+  ownerId,
+  actorId: _actorId,
+  fileId,
+  partNumber,
+}: {
+  ownerId: string;
+  actorId: string;
+  fileId: string;
+  partNumber: number;
+}) => {
+  return getMultipartPartUploadUrl({
+    userId: ownerId,
+    fileId,
+    partNumber,
+  });
+};
+
+export const completeSingleFileUploadAsCreator = async ({
+  ownerId,
+  actorId: _actorId,
+  fileId,
+}: {
+  ownerId: string;
+  actorId: string;
+  fileId: string;
+}) => {
+  return completeSingleFileUpload({
+    userId: ownerId,
+    fileId,
+  });
+};
+
+export const completeMultipartFileUploadAsCreator = async ({
+  ownerId,
+  actorId: _actorId,
+  fileId,
+  parts,
+}: {
+  ownerId: string;
+  actorId: string;
+  fileId: string;
+  parts: { partNumber: number; eTag: string }[];
+}) => {
+  return completeMultipartFileUpload({
+    userId: ownerId,
+    fileId,
+    parts,
+  });
+};
+
+export const abortFileUploadAsCreator = async ({
+  ownerId,
+  actorId: _actorId,
+  fileId,
+}: {
+  ownerId: string;
+  actorId: string;
+  fileId: string;
+}) => {
+  return abortFileUpload({
+    userId: ownerId,
+    fileId,
+  });
+};
+
+export const softDeleteFileAsCreator = async ({
+  ownerId,
+  actorId,
+  fileId,
+}: {
+  ownerId: string;
+  actorId: string;
+  fileId: string;
+}) => {
+  const file = await File.findOne({
+    _id: fileId,
+    userId: ownerId,
+    createdBy: actorId,
+    status: "ready",
+    deletedAt: null,
+  })
+    .select("_id")
+    .lean();
+
+  if (!file) {
+    throw new AppError(
+      "File not found or you can only delete files you created",
+      404,
+    );
+  }
+
+  return softDeleteFile({
+    userId: ownerId,
+    fileId,
+  });
+};
+
+/*
+|--------------------------------------------------------------------------
+| Shared file access helpers
+|--------------------------------------------------------------------------
+|
+| These functions are intentionally separate from the owner operations
+| above. The ShareLink service is responsible for validating the share
+| token, expiry, recipient, and permission before calling these helpers.
+|
+| userId remains the resource owner. createdBy identifies the actor who
+| created a resource through a shared editor link.
+|--------------------------------------------------------------------------
+*/
+
+export const getFileForSharedAccess = async ({
+  ownerId,
+  fileId,
+}: {
+  ownerId: string;
+  fileId: string;
+}) => {
+  const file = await File.findOne({
+    _id: fileId,
+    userId: ownerId,
+    status: "ready",
+    deletedAt: null,
+  }).lean();
+
+  if (!file) {
+    throw new AppError(
+      "File not found",
+      404,
+    );
+  }
+
+  return file;
+};
+
+/*
+ * A file editor is allowed to rename a shared file even when another
+ * user originally created that file. Permission to do so comes from
+ * the ShareLink service; this helper only enforces owner boundaries.
+ */
+export const renameSharedFile = async ({
+  ownerId,
+  fileId,
+  name,
+}: {
+  ownerId: string;
+  fileId: string;
+  name: string;
+}) => {
+  return renameFile({
+    userId: ownerId,
+    fileId,
+    name,
+  });
+};
+
+/*
+ * Shared-directory editors may delete only files they created.
+ * The owner can still delete any file through the normal owner API.
+ */
+export const softDeleteSharedFile = async ({
+  ownerId,
+  actorId,
+  fileId,
+}: {
+  ownerId: string;
+  actorId: string;
+  fileId: string;
+}) => {
+  const file = await File.findOne({
+    _id: fileId,
+    userId: ownerId,
+    status: "ready",
+    deletedAt: null,
+  })
+    .select("_id createdBy")
+    .lean();
+
+  if (!file) {
+    throw new AppError(
+      "File not found",
+      404,
+    );
+  }
+
+  if (
+    !file.createdBy ||
+    file.createdBy.toString() !== actorId
+  ) {
+    throw new AppError(
+      "You can only delete files you created",
+      403,
+    );
+  }
+
+  return softDeleteFile({
+    userId: ownerId,
+    fileId,
+  });
+};

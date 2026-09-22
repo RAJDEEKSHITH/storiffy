@@ -48,6 +48,11 @@ const StorageUsage = ({ className }: StorageUsageProps) => {
 
   return (
     <div className={`border-t px-4 py-4 ${className ?? ""}`}>
+      <div className="mb-2 flex items-center gap-2 text-xs font-medium text-muted-foreground">
+        <HardDrive className="size-4 text-blue-600" />
+        Storage
+      </div>
+
       <Progress
         value={percentage}
         className="h-2 bg-blue-100 [&_[data-slot=progress-indicator]]:bg-blue-600"

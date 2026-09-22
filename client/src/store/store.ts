@@ -1,10 +1,12 @@
 import { configureStore } from "@reduxjs/toolkit";
 
 import authReducer from "./auth/authSlice";
+import shareReducer from "./share/shareSlice";
 
 export const store = configureStore({
   reducer: {
     auth: authReducer,
+       share: shareReducer,
   },
 });
 

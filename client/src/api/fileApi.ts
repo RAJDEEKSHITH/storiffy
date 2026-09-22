@@ -13,6 +13,14 @@ import type {
   UploadInitiateResponse,
 } from "../types/directory";
 
+export type AbortUploadResult = {
+  fileId: string;
+  status:
+    | "cancelled"
+    | "already-completed"
+    | "already-cancelling";
+};
+
 export const getFileUrl = async (
   fileId: string,
   download = false,
@@ -83,14 +91,18 @@ export const completeMultipartUpload = async ({
   return response.data.data;
 };
 
+
+
 export const abortUpload = async (
   fileId: string,
-) => {
+): Promise<AbortUploadResult> => {
   const response = await api.post<{
     success: boolean;
     message: string;
-    data: { fileId: string; status: "cancelled" };
-  }>(`/files/upload/abort/${fileId}`);
+    data: AbortUploadResult;
+  }>(
+    `/files/upload/abort/${fileId}`,
+  );
 
   return response.data.data;
 };
@@ -150,18 +162,24 @@ const uploadMultipartPartWithRetry = async ({
   part,
   onProgress,
   signal,
+  getPartUploadUrl = getMultipartPartUploadUrl,
 }: {
   fileId: string;
   partNumber: number;
   part: Blob;
   onProgress: (loadedBytes: number) => void;
   signal: AbortSignal;
+  getPartUploadUrl?: (
+    fileId: string,
+    partNumber: number,
+    signal?: AbortSignal,
+  ) => Promise<{ partNumber: number; uploadUrl: string }>;
 }) => {
   if (signal.aborted) {
     throw new Error("Upload cancelled.");
   }
 
-  let partUrl = await getMultipartPartUploadUrl(
+  let partUrl = await getPartUploadUrl(
     fileId,
     partNumber,
     signal,
@@ -223,7 +241,7 @@ const uploadMultipartPartWithRetry = async ({
 
       onProgress(0);
 
-      partUrl = await getMultipartPartUploadUrl(
+      partUrl = await getPartUploadUrl(
         fileId,
         partNumber,
         signal,
@@ -268,6 +286,7 @@ export const uploadMultipartFileToS3 = async ({
   totalParts,
   onProgress,
   signal,
+  getPartUploadUrl = getMultipartPartUploadUrl,
 }: {
   file: File;
   fileId: string;
@@ -275,6 +294,11 @@ export const uploadMultipartFileToS3 = async ({
   totalParts: number;
   onProgress: (progress: number) => void;
   signal: AbortSignal;
+  getPartUploadUrl?: (
+    fileId: string,
+    partNumber: number,
+    signal?: AbortSignal,
+  ) => Promise<{ partNumber: number; uploadUrl: string }>;
 }) => {
   const partLoaded = new Map<number, number>();
   const completedParts = new Map<number, string>();
@@ -328,6 +352,7 @@ export const uploadMultipartFileToS3 = async ({
             fileId,
             partNumber,
             part,
+            getPartUploadUrl,
             onProgress: (loadedBytes) => {
               partLoaded.set(
                 partNumber,

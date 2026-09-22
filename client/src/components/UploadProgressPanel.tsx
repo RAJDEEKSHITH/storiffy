@@ -1,4 +1,3 @@
-import { useEffect } from "react";
 import {
   Check,
   Loader2,
@@ -24,33 +23,7 @@ const UploadProgressPanel = ({
   onCancel,
   onDismiss,
 }: UploadProgressPanelProps) => {
-  /*
-   * Automatically remove failed uploads after 3 seconds.
-   *
-   * If the user clicks Retry, the item becomes "uploading",
-   * so the cleanup timer is cleared.
-   */
-  useEffect(() => {
-    const timers = items
-      .filter(
-        (item) => item.status === "failed",
-      )
-      .map((item) =>
-        window.setTimeout(() => {
-          onDismiss(item.id);
-        }, 3000),
-      );
-
-    return () => {
-      timers.forEach((timer) => {
-        window.clearTimeout(timer);
-      });
-    };
-  }, [items, onDismiss]);
-
-  if (items.length === 0) {
-    return null;
-  }
+  if (items.length === 0) return null;
 
   const activeCount = items.filter(
     (item) =>
@@ -69,13 +42,10 @@ const UploadProgressPanel = ({
           <p className="text-sm font-semibold text-slate-900">
             Uploads
           </p>
-
           <p className="text-xs text-slate-500">
             {activeCount > 0
               ? `${activeCount} active upload${
-                  activeCount === 1
-                    ? ""
-                    : "s"
+                  activeCount === 1 ? "" : "s"
                 }`
               : "Upload activity"}
           </p>
@@ -88,78 +58,62 @@ const UploadProgressPanel = ({
             key={item.id}
             className="space-y-1.5"
           >
-            {/* File name + status icon */}
             <div className="flex items-center gap-2">
               <p className="min-w-0 flex-1 truncate text-sm font-medium text-slate-800">
                 {item.file.name}
               </p>
 
-              {item.status ===
-              "uploading" ? (
+              {item.status === "uploading" ? (
                 <Loader2 className="size-4 shrink-0 animate-spin text-blue-600" />
               ) : null}
 
-              {item.status ===
-              "cancelling" ? (
+              {item.status === "cancelling" ? (
                 <Loader2 className="size-4 shrink-0 animate-spin text-slate-400" />
               ) : null}
 
-              {item.status ===
-              "completed" ? (
+              {item.status === "completed" ? (
                 <Check className="size-4 shrink-0 text-emerald-600" />
               ) : null}
 
-              {/* {item.status ===
-              "failed" ? (
+              {item.status === "failed" ? (
                 <XCircle className="size-4 shrink-0 text-red-500" />
-              ) : null} */}
+              ) : null}
             </div>
 
-            {/* Failed */}
-            {item.status ===
-            "failed" ? (
+            {item.status === "failed" ? (
               <div className="flex items-center gap-2">
                 <p className="min-w-0 flex-1 truncate text-xs text-red-600">
-                  {item.error ??
-                    "Upload failed"}
+                  {item.error ?? "Upload failed"}
                 </p>
 
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() =>
-                    onRetry(item.id)
-                  }
+                  onClick={() => onRetry(item.id)}
                 >
                   <RotateCcw className="size-3.5" />
                   Retry
                 </Button>
 
                 <Button
+                  type="button"
                   variant="ghost"
                   size="icon"
-                  className="size-7 shrink-0 text-slate-400 hover:bg-red-50 hover:text-red-600"
+                  className="size-8 shrink-0 text-slate-400 hover:bg-red-50 hover:text-red-600"
                   onClick={() =>
-                    onDismiss(item.id)
+                    void onDismiss(item.id)
                   }
-                  aria-label={`Dismiss ${item.file.name}`}
-                  title="Dismiss"
+                  aria-label={`Discard ${item.file.name}`}
+                  title="Discard upload"
                 >
                   <X className="size-4" />
                 </Button>
               </div>
-            ) : item.status ===
-              "cancelling" ? (
-              /*
-               * Cancelling
-               */
+            ) : item.status === "cancelling" ? (
               <p className="text-xs text-slate-500">
                 Cancelling upload...
               </p>
             ) : (
-              /*
-               * Uploading / completed
-               */
               <div className="flex items-center gap-2">
                 <Progress
                   value={item.progress}
@@ -170,8 +124,7 @@ const UploadProgressPanel = ({
                   {item.progress}%
                 </span>
 
-                {item.status ===
-                "uploading" ? (
+                {item.status === "uploading" ? (
                   <Button
                     variant="ghost"
                     size="icon"

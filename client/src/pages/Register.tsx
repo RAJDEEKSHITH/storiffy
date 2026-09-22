@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 
 import { registerUser } from "../api/authApi";
 import { getErrorMessage } from "../lib/error";
@@ -17,6 +17,7 @@ import { Label } from "../components/ui/label";
 
 const Register = () => {
   const navigate = useNavigate();
+  const location = useLocation();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -44,6 +45,7 @@ const Register = () => {
 
       navigate("/login", {
         replace: true,
+        state: location.state,
       });
     } catch (error) {
       console.error(
@@ -153,6 +155,7 @@ const Register = () => {
             Already have an account?{" "}
             <Link
               to="/login"
+              state={location.state}
               className="font-medium text-blue-600 hover:underline"
             >
               Sign in

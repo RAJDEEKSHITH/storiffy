@@ -1,4 +1,3 @@
-import axios from "axios";
 import {
   Plus,
   UploadCloud,
@@ -39,7 +38,9 @@ import {
 import { getCurrentUser } from "../api/authApi";
 import Header from "../components/Header";
 import Sidebar from "../components/Sidebar";
+import ShareDialog from "../components/share-link/ShareDialog";
 import DirectoryItemsView from "../components/DirectoryItemsView";
+import { formatBytes } from "../components/StorageUsage";
 import UploadProgressPanel from "../components/UploadProgressPanel";
 import {
   AlertDialog,
@@ -76,12 +77,14 @@ import {
   updateStorageUsed,
 } from "../store/auth/authSlice";
 import type { RootState, AppDispatch } from "../store/store";
+import { upsertMyShare } from "../store/share/shareSlice";
 import type {
   Directory,
   DirectoryResponse,
   DriveFile,
 } from "../types/directory";
 import type { FileUploadItem } from "../types/upload";
+import type { ShareTarget } from "../types/share-link";
 
 type MultipartPart = {
   partNumber: number;
@@ -113,6 +116,8 @@ const Home = () => {
   const [search, setSearch] = useState("");
   const [mobileOpen, setMobileOpen] =
     useState(false);
+  const [shareTarget, setShareTarget] =
+    useState<ShareTarget | null>(null);
 
   const [createFolderOpen, setCreateFolderOpen] =
     useState(false);
@@ -127,6 +132,12 @@ const Home = () => {
   const [renameFileName, setRenameFileName] =
     useState("");
   const [deleteTarget, setDeleteTarget] =
+    useState<
+      | { type: "directory"; item: Directory }
+      | { type: "file"; item: DriveFile }
+      | null
+    >(null);
+  const [detailsTarget, setDetailsTarget] =
     useState<
       | { type: "directory"; item: Directory }
       | { type: "file"; item: DriveFile }
@@ -185,6 +196,102 @@ const Home = () => {
         setLoading(false);
       }
     }, [id, user]);
+
+    const handleDismiss = async (
+  uploadItemId: string,
+) => {
+  const item = uploadItems.find(
+    (candidate) =>
+      candidate.id === uploadItemId,
+  );
+
+  if (!item) return;
+
+  const controller =
+    uploadControllersRef.current.get(
+      uploadItemId,
+    );
+
+  /*
+   * Still actively uploading:
+   * cancel the browser request first.
+   * The upload failure/cancel path will call
+   * the backend abort using serverFileId.
+   */
+  if (
+    controller &&
+    !controller.signal.aborted
+  ) {
+    updateUploadItem(
+      uploadItemId,
+      {
+        status: "cancelling",
+      },
+    );
+
+    controller.abort();
+    return;
+  }
+
+  /*
+   * Failed upload:
+   * no active browser request remains.
+   * Explicitly tell the backend to discard
+   * the temporary upload and release quota.
+   */
+  if (item.serverFileId) {
+    updateUploadItem(
+      uploadItemId,
+      {
+        status: "cancelling",
+      },
+    );
+
+    try {
+      await abortUpload(
+        item.serverFileId,
+      );
+
+      await refreshAuthoritativeUser();
+
+      setUploadItems(
+        (current) =>
+          current.filter(
+            (candidate) =>
+              candidate.id !==
+              uploadItemId,
+          ),
+      );
+    } catch (error) {
+      console.error(
+        "Failed to discard failed upload:",
+        error,
+      );
+
+      updateUploadItem(
+        uploadItemId,
+        {
+          status: "failed",
+          error:
+            "Could not discard the upload. Please try again.",
+        },
+      );
+    }
+
+    return;
+  }
+
+  /*
+   * No server record exists.
+   */
+  setUploadItems(
+    (current) =>
+      current.filter(
+        (candidate) =>
+          candidate.id !== uploadItemId,
+      ),
+  );
+};
 
   useEffect(() => {
     setSearch("");
@@ -256,7 +363,6 @@ const Home = () => {
     );
   };
 
-
   const removeUploadItemLater = (
     uploadItemId: string,
     delay = 500,
@@ -296,17 +402,6 @@ const Home = () => {
       window.setTimeout(resolve, ms),
     );
 
-  const shouldRetryCompletion = (error: unknown) => {
-    if (axios.isAxiosError(error)) {
-      const status = error.response?.status;
-
-      // These are definitive client/resource errors. Retrying will not help.
-      return status === undefined || status >= 500;
-    }
-
-    return true;
-  };
-
   const completeSingleWithRetry = async (
     fileId: string,
   ) => {
@@ -314,14 +409,13 @@ const Home = () => {
 
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
-        return await completeSingleUpload(fileId);
+        return await completeSingleUpload(
+          fileId,
+        );
       } catch (error) {
         lastError = error;
 
-        if (
-          attempt === 3 ||
-          !shouldRetryCompletion(error)
-        ) {
+        if (attempt === 3) {
           throw error;
         }
 
@@ -350,10 +444,7 @@ const Home = () => {
       } catch (error) {
         lastError = error;
 
-        if (
-          attempt === 3 ||
-          !shouldRetryCompletion(error)
-        ) {
+        if (attempt === 3) {
           throw error;
         }
 
@@ -362,6 +453,70 @@ const Home = () => {
     }
 
     throw lastError;
+  };
+
+  /*
+   * Cleanup for a known failed/cancelled upload.
+   *
+   * The server has already reserved the user's storage and created
+   * a temporary File record. The abort endpoint is responsible for
+   * removing the S3 object/multipart upload and releasing that
+   * reservation.
+   */
+  const cleanupFailedClientUpload = async (
+    item: UploadWorkItem,
+  ) => {
+    if (!item.serverFileId) {
+      return true;
+    }
+
+    try {
+      const result =
+        await abortUpload(
+          item.serverFileId,
+        );
+
+      await refreshAuthoritativeUser();
+
+      /*
+       * The server may already have completed the upload if the
+       * response from the completion request was lost. In that
+       * case there is nothing left for this upload row to retry.
+       */
+      if (
+        result.status ===
+          "already-completed" ||
+        result.status === "cancelled" ||
+        result.status ===
+          "already-cancelling"
+      ) {
+        updateUploadItem(
+          item.id,
+          {
+            serverFileId:
+              undefined,
+            uploadType:
+              undefined,
+            phase: undefined,
+            multipartParts:
+              undefined,
+          },
+        );
+      }
+
+      return true;
+    } catch (error) {
+      /*
+       * Keep serverFileId on the upload item. The failed-upload X
+       * button can call the abort endpoint again.
+       */
+      console.error(
+        "Failed to clean up upload:",
+        error,
+      );
+
+      return false;
+    }
   };
 
   const uploadOneFile = async (
@@ -378,59 +533,37 @@ const Home = () => {
       item.file.type ||
       "application/octet-stream";
 
-    const initiated =
-      await initiateUpload({
-        directoryId: id,
-        name: item.file.name,
-        size: item.file.size,
-        mimeType,
-      });
+    let fileId: string | null =
+      item.serverFileId ?? null;
 
-    const fileId = initiated.fileId;
+    try {
+      /*
+       * A completion retry reuses the existing server upload.
+       * It must NOT create another File record or reserve quota again.
+       */
+      if (
+        item.phase === "completing" &&
+        item.serverFileId
+      ) {
+        if (
+          item.uploadType ===
+          "multipart"
+        ) {
+          if (
+            !item.multipartParts?.length
+          ) {
+            throw new Error(
+              "Multipart upload parts are unavailable. Please upload the file again.",
+            );
+          }
 
-    // Keep these local fields in sync as well as in React state so the
-    // catch block always knows whether S3 upload already finished.
-    item.serverFileId = fileId;
-    item.uploadType = initiated.uploadType;
-    item.phase = "uploading";
-
-    updateUploadItem(item.id, {
-      serverFileId: fileId,
-      uploadType: initiated.uploadType,
-      phase: "uploading",
-    });
-
-    if (signal.aborted) {
-      throw new Error("Upload cancelled.");
-    }
-
-    if (initiated.uploadType === "single") {
-      try {
-        await uploadSingleFileToS3({
-          uploadUrl: initiated.uploadUrl,
-          file: item.file,
-          mimeType,
-          signal,
-          onProgress: (progress) =>
-            updateUploadItem(item.id, { progress }),
-        });
-      } catch (s3Error) {
-        /*
-         * The PUT response can fail after S3 has already received the file.
-         * Treat this as an ambiguous completion state and preserve the
-         * server-side upload while we try to finalize it.
-         */
-        item.phase = "completing";
-        item.progress = 100;
-
-        updateUploadItem(item.id, {
-          phase: "completing",
-          progress: 100,
-        });
-
-        try {
           const completed =
-            await completeSingleWithRetry(fileId);
+            await completeMultipartWithRetry({
+              fileId:
+                item.serverFileId,
+              parts:
+                item.multipartParts,
+            });
 
           dispatch(
             updateStorageUsed(
@@ -439,105 +572,207 @@ const Home = () => {
           );
 
           return;
-        } catch {
-          throw s3Error;
         }
+
+        const completed =
+          await completeSingleWithRetry(
+            item.serverFileId,
+          );
+
+        dispatch(
+          updateStorageUsed(
+            completed.storageUsedInBytes,
+          ),
+        );
+
+        return;
       }
-
-      if (signal.aborted) {
-        throw new Error("Upload cancelled.");
-      }
-
-      item.phase = "completing";
-      item.progress = 100;
-
-      updateUploadItem(item.id, {
-        phase: "completing",
-        progress: 100,
-      });
 
       /*
-       * IMPORTANT:
-       * If this request fails after S3 succeeded, do NOT abort the upload.
-       * The Retry button will call this completion endpoint again.
+       * A normal/new attempt starts a fresh server upload.
        */
-      const completed =
-        await completeSingleWithRetry(fileId);
+      const initiated =
+        await initiateUpload({
+          directoryId: id,
+          name: item.file.name,
+          size: item.file.size,
+          mimeType,
+        });
 
-      dispatch(
-        updateStorageUsed(
-          completed.storageUsedInBytes,
-        ),
+      fileId =
+        initiated.fileId;
+
+      item.serverFileId =
+        initiated.fileId;
+      item.uploadType =
+        initiated.uploadType;
+      item.phase =
+        "uploading";
+      item.multipartParts =
+        undefined;
+
+      updateUploadItem(
+        item.id,
+        {
+          serverFileId:
+            initiated.fileId,
+          uploadType:
+            initiated.uploadType,
+          phase: "uploading",
+          multipartParts:
+            undefined,
+        },
       );
 
-      return;
-    }
-
-    const parts =
-      await uploadMultipartFileToS3({
-        file: item.file,
-        fileId: initiated.fileId,
-        partSize: initiated.partSize,
-        totalParts: initiated.totalParts,
-        signal,
-        onProgress: (progress) =>
-          updateUploadItem(item.id, { progress }),
-      });
-
-    if (signal.aborted) {
-      throw new Error("Upload cancelled.");
-    }
-
-    item.phase = "completing";
-    item.progress = 100;
-    item.multipartParts = parts;
-
-    updateUploadItem(item.id, {
-      phase: "completing",
-      progress: 100,
-      multipartParts: parts,
-    });
-
-    const completed =
-      await completeMultipartWithRetry({
-        fileId: initiated.fileId,
-        parts,
-      });
-
-    dispatch(
-      updateStorageUsed(
-        completed.storageUsedInBytes,
-      ),
-    );
-  };
-
-  const retryCompletion = async (
-    item: UploadWorkItem,
-  ) => {
-    if (!item.serverFileId) {
-      throw new Error(
-        "This upload no longer has a server upload ID. Please upload the file again.",
-      );
-    }
-
-    updateUploadItem(item.id, {
-      status: "uploading",
-      phase: "completing",
-      progress: 100,
-      error: undefined,
-    });
-
-    if (item.uploadType === "multipart") {
-      if (!item.multipartParts?.length) {
+      /*
+       * We intentionally do not cancel the initiation request.
+       * Once MongoDB has reserved the quota, we need the server
+       * File ID so the temporary record can be cleaned up.
+       */
+      if (signal.aborted) {
         throw new Error(
-          "Multipart upload parts are unavailable. Please upload the file again.",
+          "Upload cancelled.",
         );
       }
 
+      if (
+        initiated.uploadType ===
+        "single"
+      ) {
+        /*
+         * S3 upload failure is a definite failed upload from
+         * the application's point of view. Clean it immediately.
+         */
+        try {
+          await uploadSingleFileToS3({
+            uploadUrl:
+              initiated.uploadUrl,
+            file: item.file,
+            mimeType,
+            signal,
+            onProgress: (
+              progress,
+            ) =>
+              updateUploadItem(
+                item.id,
+                { progress },
+              ),
+          });
+        } catch (s3Error) {
+          await cleanupFailedClientUpload(
+            item,
+          );
+          throw s3Error;
+        }
+
+        if (signal.aborted) {
+          await cleanupFailedClientUpload(
+            item,
+          );
+
+          throw new Error(
+            "Upload cancelled.",
+          );
+        }
+
+        /*
+         * S3 has the object. From here onward, preserve the
+         * server-side record if completion fails so Retry can
+         * retry completion without uploading the file again.
+         */
+        item.phase =
+          "completing";
+
+        updateUploadItem(
+          item.id,
+          {
+            phase: "completing",
+            progress: 100,
+          },
+        );
+
+        const completed =
+          await completeSingleWithRetry(
+            initiated.fileId,
+          );
+
+        dispatch(
+          updateStorageUsed(
+            completed.storageUsedInBytes,
+          ),
+        );
+
+        return;
+      }
+
+      /*
+       * Multipart upload.
+       * Any part-upload failure is safe to abort immediately
+       * because the final object has not been completed yet.
+       */
+      let parts: MultipartPart[];
+
+      try {
+        parts =
+          await uploadMultipartFileToS3({
+            file: item.file,
+            fileId:
+              initiated.fileId,
+            partSize:
+              initiated.partSize,
+            totalParts:
+              initiated.totalParts,
+            signal,
+            onProgress: (
+              progress,
+            ) =>
+              updateUploadItem(
+                item.id,
+                { progress },
+              ),
+          });
+      } catch (multipartError) {
+        await cleanupFailedClientUpload(
+          item,
+        );
+
+        throw multipartError;
+      }
+
+      if (signal.aborted) {
+        await cleanupFailedClientUpload(
+          item,
+        );
+
+        throw new Error(
+          "Upload cancelled.",
+        );
+      }
+
+      /*
+       * Preserve the uploaded part information so a completion
+       * failure can be retried without uploading all parts again.
+       */
+      item.phase =
+        "completing";
+      item.multipartParts =
+        parts;
+
+      updateUploadItem(
+        item.id,
+        {
+          phase: "completing",
+          multipartParts:
+            parts,
+          progress: 100,
+        },
+      );
+
       const completed =
         await completeMultipartWithRetry({
-          fileId: item.serverFileId,
-          parts: item.multipartParts,
+          fileId:
+            initiated.fileId,
+          parts,
         });
 
       dispatch(
@@ -545,25 +780,39 @@ const Home = () => {
           completed.storageUsedInBytes,
         ),
       );
-    } else {
-      const completed =
-        await completeSingleWithRetry(
-          item.serverFileId,
+    } catch (error) {
+      /*
+       * Completion failures intentionally do NOT abort automatically.
+       * The object may already be safely present in S3 and the user
+       * can choose:
+       *
+       *   Retry -> retry completion
+       *   X     -> abort and discard the upload
+       *
+       * For any failure before completion, make one last cleanup
+       * attempt in case the inner upload-specific catch did not get
+       * there first.
+       */
+      if (
+        fileId &&
+        item.phase !== "completing"
+      ) {
+        await cleanupFailedClientUpload(
+          item,
         );
+      }
 
-      dispatch(
-        updateStorageUsed(
-          completed.storageUsedInBytes,
-        ),
-      );
+      throw error;
     }
   };
 
   const startUploadItems = async (
     items: UploadWorkItem[],
   ) => {
-    // Files are intentionally processed sequentially so storage usage and
-    // the current directory remain easy to reconcile.
+    /*
+     * Files are intentionally processed sequentially so storage usage
+     * and the current directory remain easy to reconcile.
+     */
     for (const item of items) {
       const controller =
         new AbortController();
@@ -573,32 +822,46 @@ const Home = () => {
         controller,
       );
 
-      updateUploadItem(item.id, {
-        status: "uploading",
-        progress: item.phase === "completing"
-          ? 100
-          : 0,
-        error: undefined,
-      });
+      const resumingCompletion =
+        item.phase ===
+          "completing" &&
+        Boolean(
+          item.serverFileId,
+        );
+
+      updateUploadItem(
+        item.id,
+        {
+          status: "uploading",
+          progress:
+            resumingCompletion
+              ? 100
+              : 0,
+          error:
+            undefined,
+        },
+      );
 
       try {
-        if (
-          item.phase === "completing" &&
-          item.serverFileId
-        ) {
-          await retryCompletion(item);
-        } else {
-          await uploadOneFile(
-            item,
-            controller.signal,
-          );
-        }
+        await uploadOneFile(
+          item,
+          controller.signal,
+        );
 
-        updateUploadItem(item.id, {
-          status: "completed",
-          progress: 100,
-          phase: undefined,
-        });
+        updateUploadItem(
+          item.id,
+          {
+            status: "completed",
+            progress: 100,
+            phase: undefined,
+            serverFileId:
+              undefined,
+            uploadType:
+              undefined,
+            multipartParts:
+              undefined,
+          },
+        );
 
         await loadDirectory();
         await refreshAuthoritativeUser();
@@ -614,25 +877,25 @@ const Home = () => {
           600,
         );
       } catch (error) {
-        if (controller.signal.aborted) {
-          if (item.serverFileId) {
-            try {
-              await abortUpload(item.serverFileId);
-            } catch (abortError) {
-              console.error(
-                "Failed to abort cancelled upload:",
-                abortError,
-              );
-            }
-          }
-
-          updateUploadItem(item.id, {
-            status: "cancelling",
-          });
+        if (
+          controller.signal.aborted
+        ) {
+          /*
+           * uploadOneFile already attempted backend cleanup.
+           * Keep the server ID only if cleanup failed.
+           */
+          updateUploadItem(
+            item.id,
+            {
+              status:
+                "cancelling",
+            },
+          );
 
           toast.add({
             title: "Upload cancelled",
-            description: item.file.name,
+            description:
+              item.file.name,
             type: "info",
           });
 
@@ -648,40 +911,16 @@ const Home = () => {
             );
 
           /*
-           * If phase is completing, the S3 object is already uploaded and
-           * the File reservation must remain so Retry can finish it.
-           * For an actual S3/upload failure, clean up the reservation.
+           * A completion failure remains retryable.
+           * The File record is intentionally kept on the server.
            */
-          const currentItem =
-            uploadItems.find(
-              (candidate) =>
-                candidate.id === item.id,
-            );
-
-          const completionFailed =
-            currentItem?.phase === "completing" ||
-            item.phase === "completing";
-
-          if (
-            !completionFailed &&
-            item.serverFileId
-          ) {
-            try {
-              await abortUpload(
-                item.serverFileId,
-              );
-            } catch (abortError) {
-              console.error(
-                "Failed to abort failed upload:",
-                abortError,
-              );
-            }
-          }
-
-          updateUploadItem(item.id, {
-            status: "failed",
-            error: message,
-          });
+          updateUploadItem(
+            item.id,
+            {
+              status: "failed",
+              error: message,
+            },
+          );
 
           console.error(
             `Failed to upload ${item.file.name}:`,
@@ -702,78 +941,136 @@ const Home = () => {
     }
   };
 
-  const handleDismiss = useCallback(
-    (uploadItemId: string) => {
-      const item = uploadItems.find(
-        (candidate) =>
-          candidate.id === uploadItemId,
-      );
-
-      if (item?.serverFileId) {
-        void abortUpload(item.serverFileId)
-          .catch((error) => {
-            // A ready file means completion already succeeded.
-            // In that case abort returns 404 and there is nothing to clean up.
-            console.error(
-              "Failed to discard upload:",
-              error,
-            );
-          });
-      }
-
-      setUploadItems((items) =>
-        items.filter(
-          (candidate) =>
-            candidate.id !== uploadItemId,
-        ),
-      );
-    },
-    [uploadItems],
-  );
-
   const handleFilesSelected = (
     event: ChangeEvent<HTMLInputElement>,
   ) => {
-    const selectedFiles = Array.from(
-      event.target.files ?? [],
-    );
+    const selectedFiles =
+      Array.from(
+        event.target.files ?? [],
+      );
 
     event.target.value = "";
 
-    if (selectedFiles.length === 0) {
+    if (
+      selectedFiles.length ===
+      0
+    ) {
       return;
     }
 
     const items: UploadWorkItem[] =
-      selectedFiles.map((file) => ({
-        id: crypto.randomUUID(),
-        file,
-        progress: 0,
-        status: "uploading",
-      }));
+      selectedFiles.map(
+        (file) => ({
+          id: crypto.randomUUID(),
+          file,
+          progress: 0,
+          status: "uploading",
+        }),
+      );
 
-    setUploadItems((current) => [
-      ...current,
-      ...items,
-    ]);
+    setUploadItems(
+      (current) => [
+        ...current,
+        ...items,
+      ],
+    );
 
-    void startUploadItems(items);
+    void startUploadItems(
+      items,
+    );
   };
 
-  const handleRetryUpload = (
+  const handleRetryUpload = async (
     uploadItemId: string,
   ) => {
     const item =
       uploadItems.find(
         (candidate) =>
-          candidate.id === uploadItemId,
+          candidate.id ===
+          uploadItemId,
       );
 
     if (!item) return;
 
-    void startUploadItems([item]);
+    /*
+     * Completion failure:
+     * reuse the existing S3 upload.
+     */
+    if (
+      item.phase ===
+        "completing" &&
+      item.serverFileId
+    ) {
+      void startUploadItems([
+        item,
+      ]);
+
+      return;
+    }
+
+    /*
+     * Earlier upload failure:
+     * make sure the old temporary upload is discarded before
+     * creating a fresh upload and reserving quota again.
+     */
+    if (item.serverFileId) {
+      updateUploadItem(
+        item.id,
+        {
+          status:
+            "cancelling",
+        },
+      );
+
+      const cleaned =
+        await cleanupFailedClientUpload(
+          item,
+        );
+
+      if (!cleaned) {
+        updateUploadItem(
+          item.id,
+          {
+            status: "failed",
+            error:
+              "The previous failed upload could not be discarded yet. Click X to try again.",
+          },
+        );
+
+        return;
+      }
+    }
+
+    updateUploadItem(
+      item.id,
+      {
+        serverFileId:
+          undefined,
+        uploadType:
+          undefined,
+        phase: undefined,
+        multipartParts:
+          undefined,
+        progress: 0,
+        status:
+          "uploading",
+        error:
+          undefined,
+      },
+    );
+
+    void startUploadItems([
+      item,
+    ]);
   };
 
+  /*
+   * Cancel an active upload.
+   *
+   * For a failed upload there is no active controller, so the same
+   * handler becomes the "discard / X" action and immediately asks the
+   * backend to clean the temporary upload.
+   */
   const handleCancelUpload = (
     uploadItemId: string,
   ) => {
@@ -783,21 +1080,73 @@ const Home = () => {
       );
 
     if (
-      !controller ||
-      controller.signal.aborted
+      controller &&
+      !controller.signal.aborted
     ) {
+      updateUploadItem(
+        uploadItemId,
+        {
+          status:
+            "cancelling",
+        },
+      );
+
+      controller.abort();
       return;
     }
 
+    const item =
+      uploadItems.find(
+        (candidate) =>
+          candidate.id ===
+          uploadItemId,
+      );
+
+    if (!item) return;
+
     updateUploadItem(
       uploadItemId,
-      { status: "cancelling" },
+      {
+        status:
+          "cancelling",
+      },
     );
 
-    controller.abort();
+    void (async () => {
+      if (item.serverFileId) {
+        const cleaned =
+          await cleanupFailedClientUpload(
+            item,
+          );
+
+        if (!cleaned) {
+          updateUploadItem(
+            uploadItemId,
+            {
+              status:
+                "failed",
+              error:
+                "Could not discard this upload. Click X again to retry cleanup.",
+            },
+          );
+
+          return;
+        }
+      }
+
+      setUploadItems(
+        (current) =>
+          current.filter(
+            (candidate) =>
+              candidate.id !==
+              uploadItemId,
+          ),
+      );
+    })();
   };
 
   const handleCreateFolder = async () => {
+
     const name =
       newFolderName.trim();
 
@@ -1047,17 +1396,10 @@ const Home = () => {
     type: "file" | "directory",
     item: DriveFile | Directory,
   ) => {
-    console.log(
-      `${type} share-link integration is not implemented yet.`,
-      item,
-    );
-
-    navigate("/share", {
-      state: {
-        type,
-        id: item._id,
-        name: item.name,
-      },
+    setShareTarget({
+      type,
+      id: item._id,
+      name: item.name,
     });
   };
 
@@ -1071,11 +1413,8 @@ const Home = () => {
       onCloseMobile={() =>
         setMobileOpen(false)
       }
-      onSharedWithMe={() =>
-        console.log(
-          "Shared with me API is not implemented yet.",
-        )
-      }
+      onSharedByMe={() => navigate("/share")}
+      onSharedWithMe={() => navigate("/shared-with-me")}
       onRecent={() =>
         console.log(
           "Recent API is not implemented yet.",
@@ -1277,10 +1616,10 @@ const Home = () => {
             }
             onOpenFile={handleOpenFile}
             onDirectoryDetails={(directory) => {
-              console.log(
-                "Directory details API is not implemented yet:",
-                directory,
-              );
+              setDetailsTarget({
+                type: "directory",
+                item: directory,
+              });
             }}
             onDirectoryDownload={(directory) => {
               console.log(
@@ -1309,10 +1648,10 @@ const Home = () => {
               })
             }
             onFileDetails={(file) => {
-              console.log(
-                "File details API is not implemented yet:",
-                file,
-              );
+              setDetailsTarget({
+                type: "file",
+                item: file,
+              });
             }}
             onFileDownload={
               handleDownloadFile
@@ -1343,7 +1682,18 @@ const Home = () => {
         items={uploadItems}
         onRetry={handleRetryUpload}
         onCancel={handleCancelUpload}
-          onDismiss={handleDismiss}
+        onDismiss={handleDismiss}
+      />
+
+      <ShareDialog
+        open={shareTarget !== null}
+        onOpenChange={(open : any) => {
+          if (!open) setShareTarget(null);
+        }}
+        target={shareTarget}
+        onSaved={(share : any) => {
+          dispatch(upsertMyShare(share));
+        }}
       />
 
       <Dialog
@@ -1543,6 +1893,119 @@ const Home = () => {
               {actionLoading
                 ? "Saving..."
                 : "Save changes"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={detailsTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setDetailsTarget(null);
+          }
+        }}
+      >
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>
+              {detailsTarget?.type === "directory"
+                ? "Folder details"
+                : "File details"}
+            </DialogTitle>
+            <DialogDescription>
+              Metadata for the selected {detailsTarget?.type === "directory" ? "folder" : "file"}.
+            </DialogDescription>
+          </DialogHeader>
+
+          {detailsTarget ? (
+            <div className="divide-y rounded-lg border bg-slate-50">
+              <div className="grid grid-cols-[120px_minmax(0,1fr)] gap-4 px-4 py-3">
+                <span className="text-sm text-slate-500">Name</span>
+                <span className="min-w-0 break-words text-sm font-medium text-slate-900">
+                  {detailsTarget.item.name}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-[120px_minmax(0,1fr)] gap-4 px-4 py-3">
+                <span className="text-sm text-slate-500">Type</span>
+                <span className="text-sm text-slate-900">
+                  {detailsTarget.type === "directory"
+                    ? "Folder"
+                    : detailsTarget.item.mimeType}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-[120px_minmax(0,1fr)] gap-4 px-4 py-3">
+                <span className="text-sm text-slate-500">Size</span>
+                <span className="text-sm text-slate-900">
+                  {formatBytes(detailsTarget.item.size)}
+                </span>
+              </div>
+
+              {detailsTarget.type === "file" ? (
+                <div className="grid grid-cols-[120px_minmax(0,1fr)] gap-4 px-4 py-3">
+                  <span className="text-sm text-slate-500">Status</span>
+                  <span className="text-sm capitalize text-slate-900">
+                    {detailsTarget.item.status}
+                  </span>
+                </div>
+              ) : null}
+
+              <div className="grid grid-cols-[120px_minmax(0,1fr)] gap-4 px-4 py-3">
+                <span className="text-sm text-slate-500">Created</span>
+                <span className="text-sm text-slate-900">
+                  {detailsTarget.item.createdAt
+                    ? new Intl.DateTimeFormat("en-IN", {
+                        day: "2-digit",
+                        month: "short",
+                        year: "numeric",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      }).format(new Date(detailsTarget.item.createdAt))
+                    : "-"}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-[120px_minmax(0,1fr)] gap-4 px-4 py-3">
+                <span className="text-sm text-slate-500">Modified</span>
+                <span className="text-sm text-slate-900">
+                  {detailsTarget.item.updatedAt
+                    ? new Intl.DateTimeFormat("en-IN", {
+                        day: "2-digit",
+                        month: "short",
+                        year: "numeric",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      }).format(new Date(detailsTarget.item.updatedAt))
+                    : "-"}
+                </span>
+              </div>
+
+              {detailsTarget.type === "file" ? (
+                <div className="grid grid-cols-[120px_minmax(0,1fr)] gap-4 px-4 py-3">
+                  <span className="text-sm text-slate-500">File ID</span>
+                  <span className="break-all text-xs font-mono text-slate-700">
+                    {detailsTarget.item._id}
+                  </span>
+                </div>
+              ) : (
+                <div className="grid grid-cols-[120px_minmax(0,1fr)] gap-4 px-4 py-3">
+                  <span className="text-sm text-slate-500">Folder ID</span>
+                  <span className="break-all text-xs font-mono text-slate-700">
+                    {detailsTarget.item._id}
+                  </span>
+                </div>
+              )}
+            </div>
+          ) : null}
+
+          <DialogFooter>
+            <Button
+              className="bg-blue-600 hover:bg-blue-700"
+              onClick={() => setDetailsTarget(null)}
+            >
+              Close
             </Button>
           </DialogFooter>
         </DialogContent>

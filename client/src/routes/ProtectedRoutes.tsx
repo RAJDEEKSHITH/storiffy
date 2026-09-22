@@ -1,5 +1,6 @@
 import Home from "../pages/Home";
 import Share from "../pages/Share";
+import SharedWithMe from "../pages/SharedWithMe";
 import Trash from "../pages/Trash";
 import ErrorPage from "../pages/ErrorPage";
 import ProtectedRoute from "../components/ProtectedRoute";
@@ -17,6 +18,10 @@ export const protectedRoutes = [
       {
         path: "/share",
         element: <Share />,
+      },
+      {
+        path: "/shared-with-me",
+        element: <SharedWithMe />,
       },
       {
         path: "/trash",
