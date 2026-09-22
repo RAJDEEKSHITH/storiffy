@@ -81,8 +81,6 @@ const SharedWithMe = () => {
         onCloseMobile={() => setMobileOpen(false)}
         onSharedByMe={() => navigate("/share")}
         onSharedWithMe={() => navigate("/shared-with-me")}
-        onRecent={() => undefined}
-        onStarred={() => undefined}
         onTrash={() => navigate("/trash")}
       />
 
@@ -106,7 +104,7 @@ const SharedWithMe = () => {
                   Shared with me
                 </h1>
                 <p className="mt-1 text-sm text-slate-500">
-                  Files and folders other OmniSpace users shared with you.
+                  Files and folders other Storiffy users shared with you.
                 </p>
               </div>
 

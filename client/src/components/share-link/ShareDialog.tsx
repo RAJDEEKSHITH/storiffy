@@ -133,6 +133,7 @@ const ShareDialog = ({
     useState<ShareLink | null>(null);
   const [copied, setCopied] = useState(false);
 
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (!open) return;
 
@@ -160,6 +161,7 @@ const ShareDialog = ({
     setDuration("1d");
     setDurationUnit("days");
   }, [open, existingShare]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const resourceName =
     existingShare?.resource.name ??
@@ -218,7 +220,7 @@ const ShareDialog = ({
       setError(
         getErrorMessage(
           requestError,
-          "No active OmniSpace user was found with this email address.",
+          "No active Storiffy user was found with this email address.",
         ),
       );
     } finally {
@@ -289,7 +291,7 @@ const ShareDialog = ({
       selectedRecipients.length === 0
     ) {
       setError(
-        "Add at least one registered OmniSpace user for a restricted link.",
+        "Add at least one registered Storiffy user for a restricted link.",
       );
       return;
     }
@@ -487,7 +489,7 @@ const ShareDialog = ({
                 Access
               </Label>
               <p className="mt-1 text-xs leading-5 text-slate-500">
-                Public links are available to anyone with the URL. Restricted links are limited to active OmniSpace accounts you choose.
+                Public links are available to anyone with the URL. Restricted links are limited to active Storiffy accounts you choose.
               </p>
             </div>
 
@@ -524,7 +526,7 @@ const ShareDialog = ({
                     Restricted
                   </span>
                   <span className="mt-1 block text-xs leading-5 text-slate-500">
-                    Only selected active OmniSpace users can access it.
+                    Only selected active Storiffy users can access it.
                   </span>
                 </span>
               </label>
@@ -587,7 +589,7 @@ const ShareDialog = ({
                     Recipients
                   </Label>
                   <p className="mt-1 text-xs leading-5 text-slate-500">
-                    Enter the email address used by a registered active OmniSpace account.
+                    Enter the email address used by a registered active Storiffy account.
                   </p>
                 </div>
 

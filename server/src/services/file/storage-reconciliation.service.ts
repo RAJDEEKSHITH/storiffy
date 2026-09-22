@@ -3,17 +3,6 @@ import mongoose from "mongoose";
 import File from "../../models/file.model.js";
 import User from "../../models/user.model.js";
 
-/*
- * storageUsedInBytes is a reservation counter.
- *
- * Every File document represents reserved storage until that document is
- * permanently removed. This includes trashed files and temporary upload
- * records (uploading/finalizing/failed).
- *
- * Therefore the consistency invariant is:
- *
- *   User.storageUsedInBytes === SUM(File.size for that user)
- */
 
 export const reconcileUserStorageUsage = async (
   userId: string,
@@ -59,12 +48,6 @@ export const reconcileUserStorageUsage = async (
     };
   }
 
-  /*
-   * Conditional update prevents the reconciliation pass from overwriting a
-   * legitimate upload/delete change that happened after our read.
-   * If the value changed concurrently, the next reconciliation pass will
-   * retry with fresh data.
-   */
   const result = await User.updateOne(
     {
       _id: userId,

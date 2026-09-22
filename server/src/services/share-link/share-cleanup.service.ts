@@ -1,11 +1,6 @@
 import ShareLink from "../../models/share-link.model.js";
 import ShareLinkRecipient from "../../models/share-link-recipient.model.js";
 
-/*
- * TTL removes expired ShareLink documents asynchronously. Because recipients
- * live in a separate collection, run this periodically from the existing
- * application cron/worker.
- */
 export const cleanupShareLinkRecipients = async () => {
   const now = new Date();
 

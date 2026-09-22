@@ -194,7 +194,7 @@ export const lookupActiveShareRecipient = async ({
 
   if (!user) {
     throw new AppError(
-      "No active OmniSpace user was found with this email address",
+      "No active Storiffy user was found with this email address",
       404,
     );
   }
@@ -260,7 +260,7 @@ const validateRecipientsByEmail = async ({
 
   if (users.length !== emails.length) {
     throw new AppError(
-      "One or more recipients are not active OmniSpace users",
+      "One or more recipients are not active Storiffy users",
       422,
     );
   }
@@ -271,7 +271,7 @@ const validateRecipientsByEmail = async ({
     const user = map.get(email);
 
     if (!user) {
-      throw new AppError(`No active OmniSpace user found for ${email}`, 422);
+      throw new AppError(`No active Storiffy user found for ${email}`, 422);
     }
 
     return user;
@@ -374,7 +374,7 @@ export const lookupShareRecipient = async ({ email }: { email: string }) => {
 
   if (!user) {
     throw new AppError(
-      "No active OmniSpace user was found with this email address",
+      "No active Storiffy user was found with this email address",
       404,
     );
   }
@@ -648,13 +648,6 @@ export const updateShareLink = async ({
             session,
           });
         } else {
-          /*
-           * No new recipient list was supplied.
-           * Preserve the existing recipient membership.
-           * We still verify that all existing recipient
-           * accounts are active so a corrupted/inconsistent
-           * recipient set cannot be silently renewed.
-           */
           const currentRows = await ShareLinkRecipient.find({
             shareLinkId: share._id,
           })
@@ -679,7 +672,7 @@ export const updateShareLink = async ({
 
             if (users.length !== currentRecipientIds.length) {
               throw new AppError(
-                "One or more existing recipients are no longer active OmniSpace users",
+                "One or more existing recipients are no longer active Storiffy users",
                 422,
               );
             }
@@ -693,7 +686,7 @@ export const updateShareLink = async ({
 
               if (!user) {
                 throw new AppError(
-                  "One or more existing recipients are no longer active OmniSpace users",
+                  "One or more existing recipients are no longer active Storiffy users",
                   422,
                 );
               }

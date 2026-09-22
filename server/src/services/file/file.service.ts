@@ -61,24 +61,6 @@ const validateDirectory = async (
   return directory;
 };
 
-/*
-|--------------------------------------------------------------------------
-| Reserve user storage
-|--------------------------------------------------------------------------
-|
-| Storage is reserved when upload starts.
-|
-| This operation is atomic:
-|
-| storageUsedInBytes + fileSize <= maxStorageLimitInBytes
-|
-| and
-|
-| storageUsedInBytes += fileSize
-|
-| happen as one MongoDB operation.
-|--------------------------------------------------------------------------
-*/
 // Storage is reserved when upload starts.
 const reserveUserStorage = async ({
   userId,
@@ -128,25 +110,6 @@ const reserveUserStorage = async ({
 };
 
 
-/*
-|--------------------------------------------------------------------------
-| Upload lifecycle helpers
-|--------------------------------------------------------------------------
-|
-| A browser -> S3 upload cannot reliably notify this API when the browser
-| closes, the tab crashes, the network disappears, or the process dies.
-| uploadExpiresAt therefore acts as a lease for every temporary upload.
-|
-| State machine:
-|
-| uploading   -> finalizing -> ready
-| uploading   -> failed    -> deleted
-| finalizing  -> failed    -> deleted
-|
-| Completion and cleanup claim the record with conditional MongoDB updates.
-| That makes the operation race-safe when two requests/workers run at once.
-|--------------------------------------------------------------------------
-*/
 
 const isS3NotFoundError = (error: unknown) => {
   const value = error as {
@@ -331,11 +294,6 @@ const getReadyUploadResult = async ({
   };
 };
 
-/*
- * A stale finalizing record is claimed by extending its lease. While the
- * lease is fresh, completion requests are rejected, so this worker owns the
- * recovery attempt.
- */
 const claimExpiredFinalizingUpload = async ({
   userId,
   fileId,
@@ -366,14 +324,6 @@ const claimExpiredFinalizingUpload = async ({
   ).lean();
 };
 
-/*
- * Recover a finalizing upload after its lease expires.
- *
- * - Valid S3 object -> finalize.
- * - Missing S3 object -> release reservation.
- * - Transient S3 failure -> keep the record and retry later.
- * - Invalid size -> delete object and release reservation.
- */
 export const recoverFinalizingUpload = async ({
   userId,
   fileId,
@@ -454,11 +404,6 @@ export const recoverFinalizingUpload = async ({
   });
 };
 
-/*
- * Recover an expired uploading record. This first claims it by changing the
- * state to finalizing. That same state is used by normal completion, so the
- * cleanup worker and a completion request cannot both own the record.
- */
 export const cleanupExpiredUpload = async ({
   userId,
   fileId,
@@ -670,10 +615,6 @@ export const cleanupExpiredUpload = async ({
   return false;
 };
 
-/*
- * Explicit abort and definitive verification failures use this helper after
- * first changing the record to status=failed.
- */
 const cleanupFailedUpload = async ({
   userId,
   fileId,
@@ -763,10 +704,6 @@ export const initiateSingleUpload =
     const storageKey =
       `${fileId}${path.extname(name)}`;
 
-    /*
-     * Reserve storage + create file
-     * atomically.
-     */
     const session =
       await mongoose.startSession();
 
@@ -820,12 +757,6 @@ export const initiateSingleUpload =
         uploadUrl,
       };
     } catch (error) {
-      /*
-       * S3 URL generation failed after storage was reserved. Mark the
-       * temporary record failed and release the reservation immediately.
-       * The operation is idempotent because only an uploading/finalizing
-       * record can be claimed by markUploadFailed().
-       */
       const failed = await markUploadFailed({
         userId,
         fileId: fileId.toString(),
@@ -872,9 +803,6 @@ export const initiateMultipartUploadService =
     const storageKey =
       `${fileId}${path.extname(name)}`;
 
-    /*
-     * Create multipart upload in S3 first.
-     */
     const uploadId =
       await initiateMultipartUpload({
         key: storageKey,
@@ -882,9 +810,6 @@ export const initiateMultipartUploadService =
       });
 
     try {
-      /*
-       * Reserve storage + create file.
-       */
       const session =
         await mongoose.startSession();
 
@@ -1054,18 +979,6 @@ export const getMultipartPartUploadUrl =
     };
   };
 
-/*
-|--------------------------------------------------------------------------
-| Finalize verified file
-|--------------------------------------------------------------------------
-|
-| The upload must already be claimed as finalizing.
-|
-| User storage was reserved during initiation, so completion does not
-| increment storage again. It only changes state to ready and increases the
-| direct parent's directory size inside the same transaction.
-|--------------------------------------------------------------------------
-*/
 
 const finalizeVerifiedFile =
   async ({
@@ -1268,11 +1181,6 @@ const claimUploadForCompletion = async ({
   );
 };
 
-/*
-|--------------------------------------------------------------------------
-| Complete single upload
-|--------------------------------------------------------------------------
-*/
 
 export const completeSingleFileUpload =
   async ({
@@ -1382,11 +1290,6 @@ export const completeSingleFileUpload =
     });
   };
 
-/*
-|--------------------------------------------------------------------------
-| Complete multipart upload
-|--------------------------------------------------------------------------
-*/
 
 export const completeMultipartFileUpload =
   async ({
@@ -1608,11 +1511,6 @@ export const completeMultipartFileUpload =
     });
   };
 
-/*
-|--------------------------------------------------------------------------
-| Abort / Cancel upload
-|--------------------------------------------------------------------------
-*/
 
 export const abortFileUpload = async ({
   userId,
@@ -1621,11 +1519,6 @@ export const abortFileUpload = async ({
   userId: string;
   fileId: string;
 }) => {
-  /*
-   * Explicit abort is allowed to transition only an active upload.
-   * Do NOT use markUploadFailed() here because that helper also accepts
-   * "finalizing", which can race with a legitimate completion request.
-   */
   const claimed = await File.findOneAndUpdate(
     {
       _id: fileId,
@@ -1760,11 +1653,6 @@ export const abortFileUpload = async ({
 };
 
 
-/*
-|--------------------------------------------------------------------------
-| Rename file
-|--------------------------------------------------------------------------
-*/
 
 export const renameFile =
   async ({
@@ -1797,17 +1685,6 @@ export const renameFile =
     return file;
   };
 
-/*
-|--------------------------------------------------------------------------
-| Soft delete file
-|--------------------------------------------------------------------------
-|
-| Storage remains consumed.
-|
-| Directory size decreases because the file is
-| no longer active inside the directory.
-|--------------------------------------------------------------------------
-*/
 
 export const softDeleteFile =
   async ({
@@ -1895,16 +1772,6 @@ export const softDeleteFile =
     return result;
   };
 
-/*
-|--------------------------------------------------------------------------
-| Get file trash
-|--------------------------------------------------------------------------
-|
-| Files inside a trashed directory are not shown
-| individually. They are represented by the
-| top-level trashed directory.
-|--------------------------------------------------------------------------
-*/
 
 export const getTrashedFiles =
   async (userId: string) => {
@@ -1941,17 +1808,6 @@ export const getTrashedFiles =
       .lean();
   };
 
-/*
-|--------------------------------------------------------------------------
-| Restore file
-|--------------------------------------------------------------------------
-|
-| Parent directory must be active.
-|
-| User storage does not change because trash
-| never released the storage reservation.
-|--------------------------------------------------------------------------
-*/
 
 export const restoreFile =
   async ({
@@ -2049,12 +1905,6 @@ export const permanentlyDeleteFile =
       );
     }
 
-    /*
-     * A trashed ready file should not normally
-     * have an active multipart upload.
-     *
-     * Still clean it if one exists.
-     */
     if (file.uploadId) {
       try {
         await abortMultipartUpload({
@@ -2074,9 +1924,6 @@ export const permanentlyDeleteFile =
       }
     }
 
-    /*
-     * Delete the actual S3 object.
-     */
     try {
       await deleteS3Object(
         file.storageKey,
@@ -2128,10 +1975,6 @@ export const permanentlyDeleteFile =
             );
           }
 
-          /*
-           * Storage was reserved for this file
-           * from upload initiation until now.
-           */
           user.storageUsedInBytes =
             Math.max(
               0,
@@ -2143,12 +1986,6 @@ export const permanentlyDeleteFile =
             session,
           });
 
-          /*
-           * Directory size was already reduced
-           * when the file entered trash.
-           *
-           * Therefore do NOT decrement it here.
-           */
           await File.deleteOne(
             {
               _id:
@@ -2173,21 +2010,6 @@ export const permanentlyDeleteFile =
     };
   };
 
-/*
-|--------------------------------------------------------------------------
-| Shared-editor compatibility wrappers
-|--------------------------------------------------------------------------
-|
-| restricted-share.service.ts works with two identities:
-|
-| ownerId  = resource owner
-| actorId  = authenticated editor
-|
-| Share authorization is performed before these functions are called.
-| The underlying upload operations intentionally continue to use ownerId
-| for File.userId / storage accounting.
-|--------------------------------------------------------------------------
-*/
 
 export const getMultipartPartUploadUrlAsCreator = async ({
   ownerId,
@@ -2287,19 +2109,6 @@ export const softDeleteFileAsCreator = async ({
   });
 };
 
-/*
-|--------------------------------------------------------------------------
-| Shared file access helpers
-|--------------------------------------------------------------------------
-|
-| These functions are intentionally separate from the owner operations
-| above. The ShareLink service is responsible for validating the share
-| token, expiry, recipient, and permission before calling these helpers.
-|
-| userId remains the resource owner. createdBy identifies the actor who
-| created a resource through a shared editor link.
-|--------------------------------------------------------------------------
-*/
 
 export const getFileForSharedAccess = async ({
   ownerId,
@@ -2325,11 +2134,6 @@ export const getFileForSharedAccess = async ({
   return file;
 };
 
-/*
- * A file editor is allowed to rename a shared file even when another
- * user originally created that file. Permission to do so comes from
- * the ShareLink service; this helper only enforces owner boundaries.
- */
 export const renameSharedFile = async ({
   ownerId,
   fileId,
@@ -2346,10 +2150,6 @@ export const renameSharedFile = async ({
   });
 };
 
-/*
- * Shared-directory editors may delete only files they created.
- * The owner can still delete any file through the normal owner API.
- */
 export const softDeleteSharedFile = async ({
   ownerId,
   actorId,

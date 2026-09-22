@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components */
 import * as React from "react";
 import { Toast as ToastPrimitive } from "@base-ui/react/toast";
 import {
@@ -82,3 +83,4 @@ export function Toaster() {
     </ToastPrimitive.Provider>
   );
 }
+/* eslint-enable react-refresh/only-export-components */

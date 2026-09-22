@@ -1,7 +1,11 @@
 import {
-  Plus,
-  UploadCloud,
+  CheckCheck,
+  ListChecks,
   Loader2,
+  Plus,
+  Trash2,
+  UploadCloud,
+  X,
 } from "lucide-react";
 import {
   useCallback,
@@ -12,11 +16,7 @@ import {
   type ChangeEvent,
 } from "react";
 import { useDispatch, useSelector } from "react-redux";
-import {
-  useLocation,
-  useNavigate,
-  useParams,
-} from "react-router-dom";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
 
 import {
   createFolder,
@@ -36,10 +36,13 @@ import {
   uploadSingleFileToS3,
 } from "../api/fileApi";
 import { getCurrentUser } from "../api/authApi";
+import { moveItemsToTrash } from "../api/trashApi";
 import Header from "../components/Header";
 import Sidebar from "../components/Sidebar";
 import ShareDialog from "../components/share-link/ShareDialog";
-import DirectoryItemsView from "../components/DirectoryItemsView";
+import DirectoryItemsView, {
+  type SelectedDriveItem,
+} from "../components/DirectoryItemsView";
 import { formatBytes } from "../components/StorageUsage";
 import UploadProgressPanel from "../components/UploadProgressPanel";
 import {
@@ -72,10 +75,7 @@ import {
 import { Input } from "../components/ui/input";
 import { toast } from "../components/ui/toast";
 import { getErrorMessage } from "../lib/error";
-import {
-  setUser,
-  updateStorageUsed,
-} from "../store/auth/authSlice";
+import { setUser, updateStorageUsed } from "../store/auth/authSlice";
 import type { RootState, AppDispatch } from "../store/store";
 import { upsertMyShare } from "../store/share/shareSlice";
 import type {
@@ -84,7 +84,7 @@ import type {
   DriveFile,
 } from "../types/directory";
 import type { FileUploadItem } from "../types/upload";
-import type { ShareTarget } from "../types/share-link";
+import type { ShareLink, ShareTarget } from "../types/share-link";
 
 type MultipartPart = {
   partNumber: number;
@@ -105,250 +105,171 @@ const Home = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const dispatch = useDispatch<AppDispatch>();
-  const user = useSelector(
-    (state: RootState) => state.auth.user,
+  const user = useSelector((state: RootState) => state.auth.user);
+
+  const [directoryData, setDirectoryData] = useState<DirectoryResponse | null>(
+    null,
   );
-
-  const [directoryData, setDirectoryData] =
-    useState<DirectoryResponse | null>(null);
-  const [loading, setLoading] =
-    useState(true);
+  const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
-  const [mobileOpen, setMobileOpen] =
-    useState(false);
-  const [shareTarget, setShareTarget] =
-    useState<ShareTarget | null>(null);
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const [shareTarget, setShareTarget] = useState<ShareTarget | null>(null);
 
-  const [createFolderOpen, setCreateFolderOpen] =
-    useState(false);
-  const [newFolderName, setNewFolderName] =
-    useState("");
+  const [createFolderOpen, setCreateFolderOpen] = useState(false);
+  const [newFolderName, setNewFolderName] = useState("");
   const [renameDirectoryTarget, setRenameDirectoryTarget] =
     useState<Directory | null>(null);
-  const [renameDirectoryName, setRenameDirectoryName] =
-    useState("");
-  const [renameFileTarget, setRenameFileTarget] =
-    useState<DriveFile | null>(null);
-  const [renameFileName, setRenameFileName] =
-    useState("");
-  const [deleteTarget, setDeleteTarget] =
-    useState<
-      | { type: "directory"; item: Directory }
-      | { type: "file"; item: DriveFile }
-      | null
-    >(null);
-  const [detailsTarget, setDetailsTarget] =
-    useState<
-      | { type: "directory"; item: Directory }
-      | { type: "file"; item: DriveFile }
-      | null
-    >(null);
-  const [actionLoading, setActionLoading] =
-    useState(false);
-
-  const [uploadItems, setUploadItems] =
-    useState<UploadWorkItem[]>([]);
-  const fileInputRef =
-    useRef<HTMLInputElement>(null);
-  const uploadControllersRef =
-    useRef(
-      new Map<string, AbortController>(),
-    );
-  const removalTimersRef =
-    useRef(
-      new Set<number>(),
-    );
-
-  const isRoot =
-    Boolean(user) && id === user?.rootDirectoryId;
-
-  const loadDirectory = useCallback(
-    async () => {
-      if (!id || !user) return;
-
-      setLoading(true);
-
-      try {
-        const data =
-          await getDirectoryItems(id);
-        setDirectoryData(data);
-      } catch (directoryError) {
-        try {
-          const file = await getFileUrl(
-            id,
-            false,
-          );
-          window.location.replace(
-            file.url,
-          );
-          return;
-        } catch (fileError) {
-          console.error(
-            "Resource could not be opened:",
-            {
-              directoryError,
-              fileError,
-            },
-          );
-          setDirectoryData(null);
-        }
-      } finally {
-        setLoading(false);
-      }
-    }, [id, user]);
-
-    const handleDismiss = async (
-  uploadItemId: string,
-) => {
-  const item = uploadItems.find(
-    (candidate) =>
-      candidate.id === uploadItemId,
+  const [renameDirectoryName, setRenameDirectoryName] = useState("");
+  const [renameFileTarget, setRenameFileTarget] = useState<DriveFile | null>(
+    null,
   );
+  const [renameFileName, setRenameFileName] = useState("");
+  const [deleteTarget, setDeleteTarget] = useState<
+    | { type: "directory"; item: Directory }
+    | { type: "file"; item: DriveFile }
+    | null
+  >(null);
+  const [detailsTarget, setDetailsTarget] = useState<
+    | { type: "directory"; item: Directory }
+    | { type: "file"; item: DriveFile }
+    | null
+  >(null);
+  const [actionLoading, setActionLoading] = useState(false);
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedItems, setSelectedItems] = useState<SelectedDriveItem[]>([]);
+  const [bulkTrashConfirmOpen, setBulkTrashConfirmOpen] = useState(false);
 
-  if (!item) return;
+  const [uploadItems, setUploadItems] = useState<UploadWorkItem[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const uploadControllersRef = useRef(new Map<string, AbortController>());
+  const removalTimersRef = useRef(new Set<number>());
 
-  const controller =
-    uploadControllersRef.current.get(
-      uploadItemId,
-    );
+  const isRoot = Boolean(user) && id === user?.rootDirectoryId;
 
-  /*
-   * Still actively uploading:
-   * cancel the browser request first.
-   * The upload failure/cancel path will call
-   * the backend abort using serverFileId.
-   */
-  if (
-    controller &&
-    !controller.signal.aborted
-  ) {
-    updateUploadItem(
-      uploadItemId,
-      {
-        status: "cancelling",
-      },
-    );
+  const loadDirectory = useCallback(async () => {
+    if (!id || !user) return;
 
-    controller.abort();
-    return;
-  }
-
-  /*
-   * Failed upload:
-   * no active browser request remains.
-   * Explicitly tell the backend to discard
-   * the temporary upload and release quota.
-   */
-  if (item.serverFileId) {
-    updateUploadItem(
-      uploadItemId,
-      {
-        status: "cancelling",
-      },
-    );
+    setLoading(true);
 
     try {
-      await abortUpload(
-        item.serverFileId,
-      );
+      const data = await getDirectoryItems(id);
+      setDirectoryData(data);
+    } catch (directoryError) {
+      try {
+        const file = await getFileUrl(id, false);
+        window.location.replace(file.url);
+        return;
+      } catch (fileError) {
+        console.error("Resource could not be opened:", {
+          directoryError,
+          fileError,
+        });
+        setDirectoryData(null);
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, [id, user]);
 
-      await refreshAuthoritativeUser();
+  const handleDismiss = async (uploadItemId: string) => {
+    const item = uploadItems.find((candidate) => candidate.id === uploadItemId);
 
-      setUploadItems(
-        (current) =>
-          current.filter(
-            (candidate) =>
-              candidate.id !==
-              uploadItemId,
-          ),
-      );
-    } catch (error) {
-      console.error(
-        "Failed to discard failed upload:",
-        error,
-      );
+    if (!item) return;
 
-      updateUploadItem(
-        uploadItemId,
-        {
-          status: "failed",
-          error:
-            "Could not discard the upload. Please try again.",
-        },
-      );
+    const controller = uploadControllersRef.current.get(uploadItemId);
+
+    if (controller && !controller.signal.aborted) {
+      updateUploadItem(uploadItemId, {
+        status: "cancelling",
+      });
+
+      controller.abort();
+      return;
     }
 
-    return;
-  }
+    if (item.serverFileId) {
+      updateUploadItem(uploadItemId, {
+        status: "cancelling",
+      });
 
-  /*
-   * No server record exists.
-   */
-  setUploadItems(
-    (current) =>
-      current.filter(
-        (candidate) =>
-          candidate.id !== uploadItemId,
-      ),
-  );
-};
+      try {
+        await abortUpload(item.serverFileId);
 
+        await refreshAuthoritativeUser();
+
+        setUploadItems((current) =>
+          current.filter((candidate) => candidate.id !== uploadItemId),
+        );
+      } catch (error) {
+        console.error("Failed to discard failed upload:", error);
+
+        updateUploadItem(uploadItemId, {
+          status: "failed",
+          error: "Could not discard the upload. Please try again.",
+        });
+      }
+
+      return;
+    }
+
+    /*
+     * No server record exists.
+     */
+    setUploadItems((current) =>
+      current.filter((candidate) => candidate.id !== uploadItemId),
+    );
+  };
+
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     setSearch("");
+    setSelectionMode(false);
+    setSelectedItems([]);
+    setBulkTrashConfirmOpen(false);
     void loadDirectory();
   }, [loadDirectory, location.key]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   useEffect(() => {
+    const removalTimers = removalTimersRef.current;
+    const uploadControllers = uploadControllersRef.current;
+
     return () => {
-      for (const timer of removalTimersRef.current) {
+      for (const timer of removalTimers) {
         window.clearTimeout(timer);
       }
 
-      for (const controller of uploadControllersRef.current.values()) {
+      for (const controller of uploadControllers.values()) {
         controller.abort();
       }
 
-      uploadControllersRef.current.clear();
+      uploadControllers.clear();
     };
   }, []);
 
   const directories = useMemo(() => {
-    const value = search
-      .trim()
-      .toLowerCase();
-    const items =
-      directoryData?.directories ?? [];
+    const value = search.trim().toLowerCase();
+    const items = directoryData?.directories ?? [];
 
     if (!value) return items;
 
     return items.filter((directory) =>
-      directory.name
-        .toLowerCase()
-        .includes(value),
+      directory.name.toLowerCase().includes(value),
     );
   }, [directoryData?.directories, search]);
 
   const files = useMemo(() => {
-    const value = search
-      .trim()
-      .toLowerCase();
-    const items =
-      directoryData?.files ?? [];
+    const value = search.trim().toLowerCase();
+    const items = directoryData?.files ?? [];
 
     if (!value) return items;
 
-    return items.filter((file) =>
-      file.name
-        .toLowerCase()
-        .includes(value),
-    );
+    return items.filter((file) => file.name.toLowerCase().includes(value));
   }, [directoryData?.files, search]);
 
   if (!user) return null;
 
-  const totalItems =
-    directories.length +
-    files.length;
+  const totalItems = directories.length + files.length;
 
   const updateUploadItem = (
     uploadItemId: string,
@@ -356,62 +277,41 @@ const Home = () => {
   ) => {
     setUploadItems((current) =>
       current.map((item) =>
-        item.id === uploadItemId
-          ? { ...item, ...patch }
-          : item,
+        item.id === uploadItemId ? { ...item, ...patch } : item,
       ),
     );
   };
 
-  const removeUploadItemLater = (
-    uploadItemId: string,
-    delay = 500,
-  ) => {
+  const removeUploadItemLater = (uploadItemId: string, delay = 500) => {
     const timer = window.setTimeout(() => {
-      removalTimersRef.current.delete(
-        timer,
-      );
+      removalTimersRef.current.delete(timer);
 
       setUploadItems((current) =>
-        current.filter(
-          (item) =>
-            item.id !== uploadItemId,
-        ),
+        current.filter((item) => item.id !== uploadItemId),
       );
     }, delay);
 
     removalTimersRef.current.add(timer);
   };
 
-  const refreshAuthoritativeUser =
-    async () => {
-      try {
-        const freshUser =
-          await getCurrentUser();
-        dispatch(setUser(freshUser));
-      } catch (error) {
-        console.error(
-          "Failed to refresh authoritative user state:",
-          error,
-        );
-      }
-    };
+  const refreshAuthoritativeUser = async () => {
+    try {
+      const freshUser = await getCurrentUser();
+      dispatch(setUser(freshUser));
+    } catch (error) {
+      console.error("Failed to refresh authoritative user state:", error);
+    }
+  };
 
   const sleep = (ms: number) =>
-    new Promise<void>((resolve) =>
-      window.setTimeout(resolve, ms),
-    );
+    new Promise<void>((resolve) => window.setTimeout(resolve, ms));
 
-  const completeSingleWithRetry = async (
-    fileId: string,
-  ) => {
+  const completeSingleWithRetry = async (fileId: string) => {
     let lastError: unknown;
 
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
-        return await completeSingleUpload(
-          fileId,
-        );
+        return await completeSingleUpload(fileId);
       } catch (error) {
         lastError = error;
 
@@ -463,18 +363,13 @@ const Home = () => {
    * removing the S3 object/multipart upload and releasing that
    * reservation.
    */
-  const cleanupFailedClientUpload = async (
-    item: UploadWorkItem,
-  ) => {
+  const cleanupFailedClientUpload = async (item: UploadWorkItem) => {
     if (!item.serverFileId) {
       return true;
     }
 
     try {
-      const result =
-        await abortUpload(
-          item.serverFileId,
-        );
+      const result = await abortUpload(item.serverFileId);
 
       await refreshAuthoritativeUser();
 
@@ -484,24 +379,16 @@ const Home = () => {
        * case there is nothing left for this upload row to retry.
        */
       if (
-        result.status ===
-          "already-completed" ||
+        result.status === "already-completed" ||
         result.status === "cancelled" ||
-        result.status ===
-          "already-cancelling"
+        result.status === "already-cancelling"
       ) {
-        updateUploadItem(
-          item.id,
-          {
-            serverFileId:
-              undefined,
-            uploadType:
-              undefined,
-            phase: undefined,
-            multipartParts:
-              undefined,
-          },
-        );
+        updateUploadItem(item.id, {
+          serverFileId: undefined,
+          uploadType: undefined,
+          phase: undefined,
+          multipartParts: undefined,
+        });
       }
 
       return true;
@@ -510,80 +397,47 @@ const Home = () => {
        * Keep serverFileId on the upload item. The failed-upload X
        * button can call the abort endpoint again.
        */
-      console.error(
-        "Failed to clean up upload:",
-        error,
-      );
+      console.error("Failed to clean up upload:", error);
 
       return false;
     }
   };
 
-  const uploadOneFile = async (
-    item: UploadWorkItem,
-    signal: AbortSignal,
-  ) => {
+  const uploadOneFile = async (item: UploadWorkItem, signal: AbortSignal) => {
     if (!id) {
-      throw new Error(
-        "Current directory is unavailable.",
-      );
+      throw new Error("Current directory is unavailable.");
     }
 
-    const mimeType =
-      item.file.type ||
-      "application/octet-stream";
+    const mimeType = item.file.type || "application/octet-stream";
 
-    let fileId: string | null =
-      item.serverFileId ?? null;
+    let fileId: string | null = item.serverFileId ?? null;
 
     try {
       /*
        * A completion retry reuses the existing server upload.
        * It must NOT create another File record or reserve quota again.
        */
-      if (
-        item.phase === "completing" &&
-        item.serverFileId
-      ) {
-        if (
-          item.uploadType ===
-          "multipart"
-        ) {
-          if (
-            !item.multipartParts?.length
-          ) {
+      if (item.phase === "completing" && item.serverFileId) {
+        if (item.uploadType === "multipart") {
+          if (!item.multipartParts?.length) {
             throw new Error(
               "Multipart upload parts are unavailable. Please upload the file again.",
             );
           }
 
-          const completed =
-            await completeMultipartWithRetry({
-              fileId:
-                item.serverFileId,
-              parts:
-                item.multipartParts,
-            });
+          const completed = await completeMultipartWithRetry({
+            fileId: item.serverFileId,
+            parts: item.multipartParts,
+          });
 
-          dispatch(
-            updateStorageUsed(
-              completed.storageUsedInBytes,
-            ),
-          );
+          dispatch(updateStorageUsed(completed.storageUsedInBytes));
 
           return;
         }
 
-        const completed =
-          await completeSingleWithRetry(
-            item.serverFileId,
-          );
+        const completed = await completeSingleWithRetry(item.serverFileId);
 
-        dispatch(
-          updateStorageUsed(
-            completed.storageUsedInBytes,
-          ),
-        );
+        dispatch(updateStorageUsed(completed.storageUsedInBytes));
 
         return;
       }
@@ -591,38 +445,26 @@ const Home = () => {
       /*
        * A normal/new attempt starts a fresh server upload.
        */
-      const initiated =
-        await initiateUpload({
-          directoryId: id,
-          name: item.file.name,
-          size: item.file.size,
-          mimeType,
-        });
+      const initiated = await initiateUpload({
+        directoryId: id,
+        name: item.file.name,
+        size: item.file.size,
+        mimeType,
+      });
 
-      fileId =
-        initiated.fileId;
+      fileId = initiated.fileId;
 
-      item.serverFileId =
-        initiated.fileId;
-      item.uploadType =
-        initiated.uploadType;
-      item.phase =
-        "uploading";
-      item.multipartParts =
-        undefined;
+      item.serverFileId = initiated.fileId;
+      item.uploadType = initiated.uploadType;
+      item.phase = "uploading";
+      item.multipartParts = undefined;
 
-      updateUploadItem(
-        item.id,
-        {
-          serverFileId:
-            initiated.fileId,
-          uploadType:
-            initiated.uploadType,
-          phase: "uploading",
-          multipartParts:
-            undefined,
-        },
-      );
+      updateUploadItem(item.id, {
+        serverFileId: initiated.fileId,
+        uploadType: initiated.uploadType,
+        phase: "uploading",
+        multipartParts: undefined,
+      });
 
       /*
        * We intentionally do not cancel the initiation request.
@@ -630,49 +472,31 @@ const Home = () => {
        * File ID so the temporary record can be cleaned up.
        */
       if (signal.aborted) {
-        throw new Error(
-          "Upload cancelled.",
-        );
+        throw new Error("Upload cancelled.");
       }
 
-      if (
-        initiated.uploadType ===
-        "single"
-      ) {
+      if (initiated.uploadType === "single") {
         /*
          * S3 upload failure is a definite failed upload from
          * the application's point of view. Clean it immediately.
          */
         try {
           await uploadSingleFileToS3({
-            uploadUrl:
-              initiated.uploadUrl,
+            uploadUrl: initiated.uploadUrl,
             file: item.file,
             mimeType,
             signal,
-            onProgress: (
-              progress,
-            ) =>
-              updateUploadItem(
-                item.id,
-                { progress },
-              ),
+            onProgress: (progress) => updateUploadItem(item.id, { progress }),
           });
         } catch (s3Error) {
-          await cleanupFailedClientUpload(
-            item,
-          );
+          await cleanupFailedClientUpload(item);
           throw s3Error;
         }
 
         if (signal.aborted) {
-          await cleanupFailedClientUpload(
-            item,
-          );
+          await cleanupFailedClientUpload(item);
 
-          throw new Error(
-            "Upload cancelled.",
-          );
+          throw new Error("Upload cancelled.");
         }
 
         /*
@@ -680,27 +504,16 @@ const Home = () => {
          * server-side record if completion fails so Retry can
          * retry completion without uploading the file again.
          */
-        item.phase =
-          "completing";
+        item.phase = "completing";
 
-        updateUploadItem(
-          item.id,
-          {
-            phase: "completing",
-            progress: 100,
-          },
-        );
+        updateUploadItem(item.id, {
+          phase: "completing",
+          progress: 100,
+        });
 
-        const completed =
-          await completeSingleWithRetry(
-            initiated.fileId,
-          );
+        const completed = await completeSingleWithRetry(initiated.fileId);
 
-        dispatch(
-          updateStorageUsed(
-            completed.storageUsedInBytes,
-          ),
-        );
+        dispatch(updateStorageUsed(completed.storageUsedInBytes));
 
         return;
       }
@@ -713,73 +526,45 @@ const Home = () => {
       let parts: MultipartPart[];
 
       try {
-        parts =
-          await uploadMultipartFileToS3({
-            file: item.file,
-            fileId:
-              initiated.fileId,
-            partSize:
-              initiated.partSize,
-            totalParts:
-              initiated.totalParts,
-            signal,
-            onProgress: (
-              progress,
-            ) =>
-              updateUploadItem(
-                item.id,
-                { progress },
-              ),
-          });
+        parts = await uploadMultipartFileToS3({
+          file: item.file,
+          fileId: initiated.fileId,
+          partSize: initiated.partSize,
+          totalParts: initiated.totalParts,
+          signal,
+          onProgress: (progress) => updateUploadItem(item.id, { progress }),
+        });
       } catch (multipartError) {
-        await cleanupFailedClientUpload(
-          item,
-        );
+        await cleanupFailedClientUpload(item);
 
         throw multipartError;
       }
 
       if (signal.aborted) {
-        await cleanupFailedClientUpload(
-          item,
-        );
+        await cleanupFailedClientUpload(item);
 
-        throw new Error(
-          "Upload cancelled.",
-        );
+        throw new Error("Upload cancelled.");
       }
 
       /*
        * Preserve the uploaded part information so a completion
        * failure can be retried without uploading all parts again.
        */
-      item.phase =
-        "completing";
-      item.multipartParts =
-        parts;
+      item.phase = "completing";
+      item.multipartParts = parts;
 
-      updateUploadItem(
-        item.id,
-        {
-          phase: "completing",
-          multipartParts:
-            parts,
-          progress: 100,
-        },
-      );
+      updateUploadItem(item.id, {
+        phase: "completing",
+        multipartParts: parts,
+        progress: 100,
+      });
 
-      const completed =
-        await completeMultipartWithRetry({
-          fileId:
-            initiated.fileId,
-          parts,
-        });
+      const completed = await completeMultipartWithRetry({
+        fileId: initiated.fileId,
+        parts,
+      });
 
-      dispatch(
-        updateStorageUsed(
-          completed.storageUsedInBytes,
-        ),
-      );
+      dispatch(updateStorageUsed(completed.storageUsedInBytes));
     } catch (error) {
       /*
        * Completion failures intentionally do NOT abort automatically.
@@ -793,75 +578,44 @@ const Home = () => {
        * attempt in case the inner upload-specific catch did not get
        * there first.
        */
-      if (
-        fileId &&
-        item.phase !== "completing"
-      ) {
-        await cleanupFailedClientUpload(
-          item,
-        );
+      if (fileId && item.phase !== "completing") {
+        await cleanupFailedClientUpload(item);
       }
 
       throw error;
     }
   };
 
-  const startUploadItems = async (
-    items: UploadWorkItem[],
-  ) => {
+  const startUploadItems = async (items: UploadWorkItem[]) => {
     /*
      * Files are intentionally processed sequentially so storage usage
      * and the current directory remain easy to reconcile.
      */
     for (const item of items) {
-      const controller =
-        new AbortController();
+      const controller = new AbortController();
 
-      uploadControllersRef.current.set(
-        item.id,
-        controller,
-      );
+      uploadControllersRef.current.set(item.id, controller);
 
       const resumingCompletion =
-        item.phase ===
-          "completing" &&
-        Boolean(
-          item.serverFileId,
-        );
+        item.phase === "completing" && Boolean(item.serverFileId);
 
-      updateUploadItem(
-        item.id,
-        {
-          status: "uploading",
-          progress:
-            resumingCompletion
-              ? 100
-              : 0,
-          error:
-            undefined,
-        },
-      );
+      updateUploadItem(item.id, {
+        status: "uploading",
+        progress: resumingCompletion ? 100 : 0,
+        error: undefined,
+      });
 
       try {
-        await uploadOneFile(
-          item,
-          controller.signal,
-        );
+        await uploadOneFile(item, controller.signal);
 
-        updateUploadItem(
-          item.id,
-          {
-            status: "completed",
-            progress: 100,
-            phase: undefined,
-            serverFileId:
-              undefined,
-            uploadType:
-              undefined,
-            multipartParts:
-              undefined,
-          },
-        );
+        updateUploadItem(item.id, {
+          status: "completed",
+          progress: 100,
+          phase: undefined,
+          serverFileId: undefined,
+          uploadType: undefined,
+          multipartParts: undefined,
+        });
 
         await loadDirectory();
         await refreshAuthoritativeUser();
@@ -872,60 +626,37 @@ const Home = () => {
           type: "success",
         });
 
-        removeUploadItemLater(
-          item.id,
-          600,
-        );
+        removeUploadItemLater(item.id, 600);
       } catch (error) {
-        if (
-          controller.signal.aborted
-        ) {
+        if (controller.signal.aborted) {
           /*
            * uploadOneFile already attempted backend cleanup.
            * Keep the server ID only if cleanup failed.
            */
-          updateUploadItem(
-            item.id,
-            {
-              status:
-                "cancelling",
-            },
-          );
+          updateUploadItem(item.id, {
+            status: "cancelling",
+          });
 
           toast.add({
             title: "Upload cancelled",
-            description:
-              item.file.name,
+            description: item.file.name,
             type: "info",
           });
 
-          removeUploadItemLater(
-            item.id,
-            500,
-          );
+          removeUploadItemLater(item.id, 500);
         } else {
-          const message =
-            getErrorMessage(
-              error,
-              "Upload failed.",
-            );
+          const message = getErrorMessage(error, "Upload failed.");
 
           /*
            * A completion failure remains retryable.
            * The File record is intentionally kept on the server.
            */
-          updateUploadItem(
-            item.id,
-            {
-              status: "failed",
-              error: message,
-            },
-          );
+          updateUploadItem(item.id, {
+            status: "failed",
+            error: message,
+          });
 
-          console.error(
-            `Failed to upload ${item.file.name}:`,
-            error,
-          );
+          console.error(`Failed to upload ${item.file.name}:`, error);
 
           toast.add({
             title: "Upload failed",
@@ -934,61 +665,34 @@ const Home = () => {
           });
         }
       } finally {
-        uploadControllersRef.current.delete(
-          item.id,
-        );
+        uploadControllersRef.current.delete(item.id);
       }
     }
   };
 
-  const handleFilesSelected = (
-    event: ChangeEvent<HTMLInputElement>,
-  ) => {
-    const selectedFiles =
-      Array.from(
-        event.target.files ?? [],
-      );
+  const handleFilesSelected = (event: ChangeEvent<HTMLInputElement>) => {
+    const selectedFiles = Array.from(event.target.files ?? []);
 
     event.target.value = "";
 
-    if (
-      selectedFiles.length ===
-      0
-    ) {
+    if (selectedFiles.length === 0) {
       return;
     }
 
-    const items: UploadWorkItem[] =
-      selectedFiles.map(
-        (file) => ({
-          id: crypto.randomUUID(),
-          file,
-          progress: 0,
-          status: "uploading",
-        }),
-      );
+    const items: UploadWorkItem[] = selectedFiles.map((file) => ({
+      id: crypto.randomUUID(),
+      file,
+      progress: 0,
+      status: "uploading",
+    }));
 
-    setUploadItems(
-      (current) => [
-        ...current,
-        ...items,
-      ],
-    );
+    setUploadItems((current) => [...current, ...items]);
 
-    void startUploadItems(
-      items,
-    );
+    void startUploadItems(items);
   };
 
-  const handleRetryUpload = async (
-    uploadItemId: string,
-  ) => {
-    const item =
-      uploadItems.find(
-        (candidate) =>
-          candidate.id ===
-          uploadItemId,
-      );
+  const handleRetryUpload = async (uploadItemId: string) => {
+    const item = uploadItems.find((candidate) => candidate.id === uploadItemId);
 
     if (!item) return;
 
@@ -996,14 +700,8 @@ const Home = () => {
      * Completion failure:
      * reuse the existing S3 upload.
      */
-    if (
-      item.phase ===
-        "completing" &&
-      item.serverFileId
-    ) {
-      void startUploadItems([
-        item,
-      ]);
+    if (item.phase === "completing" && item.serverFileId) {
+      void startUploadItems([item]);
 
       return;
     }
@@ -1014,54 +712,34 @@ const Home = () => {
      * creating a fresh upload and reserving quota again.
      */
     if (item.serverFileId) {
-      updateUploadItem(
-        item.id,
-        {
-          status:
-            "cancelling",
-        },
-      );
+      updateUploadItem(item.id, {
+        status: "cancelling",
+      });
 
-      const cleaned =
-        await cleanupFailedClientUpload(
-          item,
-        );
+      const cleaned = await cleanupFailedClientUpload(item);
 
       if (!cleaned) {
-        updateUploadItem(
-          item.id,
-          {
-            status: "failed",
-            error:
-              "The previous failed upload could not be discarded yet. Click X to try again.",
-          },
-        );
+        updateUploadItem(item.id, {
+          status: "failed",
+          error:
+            "The previous failed upload could not be discarded yet. Click X to try again.",
+        });
 
         return;
       }
     }
 
-    updateUploadItem(
-      item.id,
-      {
-        serverFileId:
-          undefined,
-        uploadType:
-          undefined,
-        phase: undefined,
-        multipartParts:
-          undefined,
-        progress: 0,
-        status:
-          "uploading",
-        error:
-          undefined,
-      },
-    );
+    updateUploadItem(item.id, {
+      serverFileId: undefined,
+      uploadType: undefined,
+      phase: undefined,
+      multipartParts: undefined,
+      progress: 0,
+      status: "uploading",
+      error: undefined,
+    });
 
-    void startUploadItems([
-      item,
-    ]);
+    void startUploadItems([item]);
   };
 
   /*
@@ -1071,84 +749,179 @@ const Home = () => {
    * handler becomes the "discard / X" action and immediately asks the
    * backend to clean the temporary upload.
    */
-  const handleCancelUpload = (
-    uploadItemId: string,
-  ) => {
-    const controller =
-      uploadControllersRef.current.get(
-        uploadItemId,
-      );
+  const handleCancelUpload = (uploadItemId: string) => {
+    const controller = uploadControllersRef.current.get(uploadItemId);
 
-    if (
-      controller &&
-      !controller.signal.aborted
-    ) {
-      updateUploadItem(
-        uploadItemId,
-        {
-          status:
-            "cancelling",
-        },
-      );
+    if (controller && !controller.signal.aborted) {
+      updateUploadItem(uploadItemId, {
+        status: "cancelling",
+      });
 
       controller.abort();
       return;
     }
 
-    const item =
-      uploadItems.find(
-        (candidate) =>
-          candidate.id ===
-          uploadItemId,
-      );
+    const item = uploadItems.find((candidate) => candidate.id === uploadItemId);
 
     if (!item) return;
 
-    updateUploadItem(
-      uploadItemId,
-      {
-        status:
-          "cancelling",
-      },
-    );
+    updateUploadItem(uploadItemId, {
+      status: "cancelling",
+    });
 
     void (async () => {
       if (item.serverFileId) {
-        const cleaned =
-          await cleanupFailedClientUpload(
-            item,
-          );
+        const cleaned = await cleanupFailedClientUpload(item);
 
         if (!cleaned) {
-          updateUploadItem(
-            uploadItemId,
-            {
-              status:
-                "failed",
-              error:
-                "Could not discard this upload. Click X again to retry cleanup.",
-            },
-          );
+          updateUploadItem(uploadItemId, {
+            status: "failed",
+            error:
+              "Could not discard this upload. Click X again to retry cleanup.",
+          });
 
           return;
         }
       }
 
-      setUploadItems(
-        (current) =>
-          current.filter(
-            (candidate) =>
-              candidate.id !==
-              uploadItemId,
-          ),
+      setUploadItems((current) =>
+        current.filter((candidate) => candidate.id !== uploadItemId),
       );
     })();
   };
 
-  const handleCreateFolder = async () => {
+  const enterSelectionMode = () => {
+    setSelectionMode(true);
+    setSelectedItems([]);
+  };
 
-    const name =
-      newFolderName.trim();
+  const exitSelectionMode = () => {
+    if (actionLoading) return;
+    setSelectionMode(false);
+    setSelectedItems([]);
+    setBulkTrashConfirmOpen(false);
+  };
+
+  const toggleSelectedItem = (item: SelectedDriveItem) => {
+    if (item.type === "file") {
+      const file = files.find((candidate) => candidate._id === item.id);
+      if (!file || file.status !== "ready") return;
+    }
+
+    setSelectedItems((current) => {
+      const alreadySelected = current.some(
+        (selected) => selected.type === item.type && selected.id === item.id,
+      );
+
+      if (alreadySelected) {
+        return current.filter(
+          (selected) =>
+            !(selected.type === item.type && selected.id === item.id),
+        );
+      }
+
+      return [...current, item];
+    });
+  };
+
+  const selectableVisibleItems: SelectedDriveItem[] = [
+    ...directories.map((directory) => ({
+      type: "directory" as const,
+      id: directory._id,
+    })),
+    ...files
+      .filter((file) => file.status === "ready")
+      .map((file) => ({
+        type: "file" as const,
+        id: file._id,
+      })),
+  ];
+
+  const allVisibleSelectable =
+    selectableVisibleItems.length > 0 &&
+    selectableVisibleItems.every((item) =>
+      selectedItems.some(
+        (selected) => selected.type === item.type && selected.id === item.id,
+      ),
+    );
+
+  const handleSelectAll = () => {
+    if (allVisibleSelectable) {
+      setSelectedItems((current) =>
+        current.filter(
+          (selected) =>
+            !selectableVisibleItems.some(
+              (visible) =>
+                visible.type === selected.type && visible.id === selected.id,
+            ),
+        ),
+      );
+      return;
+    }
+
+    setSelectedItems((current) => {
+      const next = new Map(
+        current.map((item) => [`${item.type}:${item.id}`, item]),
+      );
+
+      for (const item of selectableVisibleItems) {
+        next.set(`${item.type}:${item.id}`, item);
+      }
+
+      return [...next.values()];
+    });
+  };
+
+  const handleBulkTrash = async () => {
+    if (selectedItems.length === 0) return;
+
+    setActionLoading(true);
+
+    try {
+      const result = await moveItemsToTrash({
+        directories: selectedItems
+          .filter((item) => item.type === "directory")
+          .map((item) => item.id),
+        files: selectedItems
+          .filter((item) => item.type === "file")
+          .map((item) => item.id),
+      });
+
+      setBulkTrashConfirmOpen(false);
+      setSelectionMode(false);
+      setSelectedItems([]);
+      await loadDirectory();
+
+      const folderText =
+        result.deletedDirectories === 1
+          ? "1 folder"
+          : `${result.deletedDirectories} folders`;
+      const fileText =
+        result.deletedFiles === 1 ? "1 file" : `${result.deletedFiles} files`;
+
+      toast.add({
+        title: "Items moved to trash",
+        description: `Moved ${folderText} and ${fileText} to Trash.`,
+        type: "success",
+      });
+    } catch (error) {
+      console.error("Failed to move selected items to trash:", error);
+
+      toast.add({
+        title: "Unable to move selected items to trash",
+        description: getErrorMessage(
+          error,
+          "Please review your selection and try again.",
+        ),
+        type: "error",
+      });
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleCreateFolder = async () => {
+    const name = newFolderName.trim();
 
     if (!id || !name) return;
 
@@ -1169,18 +942,11 @@ const Home = () => {
         type: "success",
       });
     } catch (error) {
-      console.error(
-        "Failed to create folder:",
-        error,
-      );
+      console.error("Failed to create folder:", error);
 
       toast.add({
         title: "Unable to create folder",
-        description:
-          getErrorMessage(
-            error,
-            "Please try again.",
-          ),
+        description: getErrorMessage(error, "Please try again."),
         type: "error",
       });
     } finally {
@@ -1188,125 +954,87 @@ const Home = () => {
     }
   };
 
-  const handleRenameDirectory =
-    async () => {
-      if (!renameDirectoryTarget)
-        return;
+  const handleRenameDirectory = async () => {
+    if (!renameDirectoryTarget) return;
 
-      const name =
-        renameDirectoryName.trim();
+    const name = renameDirectoryName.trim();
 
-      if (!name) return;
-
-      setActionLoading(true);
-
-      try {
-        await renameDirectory(
-          renameDirectoryTarget._id,
-          name,
-        );
-
-        setRenameDirectoryTarget(
-          null,
-        );
-        setRenameDirectoryName("");
-        await loadDirectory();
-
-        toast.add({
-          title: "Folder renamed",
-          type: "success",
-        });
-      } catch (error) {
-        console.error(
-          "Failed to rename folder:",
-          error,
-        );
-
-        toast.add({
-          title:
-            "Unable to rename folder",
-          description:
-            getErrorMessage(
-              error,
-              "Please try again.",
-            ),
-          type: "error",
-        });
-      } finally {
-        setActionLoading(false);
-      }
-    };
-
-  const handleRenameFile =
-    async () => {
-      if (!renameFileTarget)
-        return;
-
-      const name =
-        renameFileName.trim();
-
-      if (!name) return;
-
-      setActionLoading(true);
-
-      try {
-        await renameFile(
-          renameFileTarget._id,
-          name,
-        );
-
-        setRenameFileTarget(null);
-        setRenameFileName("");
-        await loadDirectory();
-
-        toast.add({
-          title: "File renamed",
-          type: "success",
-        });
-      } catch (error) {
-        console.error(
-          "Failed to rename file:",
-          error,
-        );
-
-        toast.add({
-          title:
-            "Unable to rename file",
-          description:
-            getErrorMessage(
-              error,
-              "Please try again.",
-            ),
-          type: "error",
-        });
-      } finally {
-        setActionLoading(false);
-      }
-    };
-
-  const handleDelete = async () => {
-    if (!deleteTarget)
-      return;
+    if (!name) return;
 
     setActionLoading(true);
 
     try {
-      if (
-        deleteTarget.type ===
-        "directory"
-      ) {
-        await deleteDirectory(
-          deleteTarget.item._id,
-        );
+      await renameDirectory(renameDirectoryTarget._id, name);
+
+      setRenameDirectoryTarget(null);
+      setRenameDirectoryName("");
+      await loadDirectory();
+
+      toast.add({
+        title: "Folder renamed",
+        type: "success",
+      });
+    } catch (error) {
+      console.error("Failed to rename folder:", error);
+
+      toast.add({
+        title: "Unable to rename folder",
+        description: getErrorMessage(error, "Please try again."),
+        type: "error",
+      });
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleRenameFile = async () => {
+    if (!renameFileTarget) return;
+
+    const name = renameFileName.trim();
+
+    if (!name) return;
+
+    setActionLoading(true);
+
+    try {
+      await renameFile(renameFileTarget._id, name);
+
+      setRenameFileTarget(null);
+      setRenameFileName("");
+      await loadDirectory();
+
+      toast.add({
+        title: "File renamed",
+        type: "success",
+      });
+    } catch (error) {
+      console.error("Failed to rename file:", error);
+
+      toast.add({
+        title: "Unable to rename file",
+        description: getErrorMessage(error, "Please try again."),
+        type: "error",
+      });
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!deleteTarget) return;
+
+    setActionLoading(true);
+
+    try {
+      if (deleteTarget.type === "directory") {
+        await deleteDirectory(deleteTarget.item._id);
 
         toast.add({
           title: "Folder moved to trash",
           type: "success",
         });
       } else {
-        await deleteFile(
-          deleteTarget.item._id,
-        );
+        await deleteFile(deleteTarget.item._id);
 
         toast.add({
           title: "File moved to trash",
@@ -1317,18 +1045,11 @@ const Home = () => {
       setDeleteTarget(null);
       await loadDirectory();
     } catch (error) {
-      console.error(
-        "Failed to move item to trash:",
-        error,
-      );
+      console.error("Failed to move item to trash:", error);
 
       toast.add({
         title: "Unable to move to trash",
-        description:
-          getErrorMessage(
-            error,
-            "Please try again.",
-          ),
+        description: getErrorMessage(error, "Please try again."),
         type: "error",
       });
     } finally {
@@ -1336,58 +1057,35 @@ const Home = () => {
     }
   };
 
-  const handleOpenFile = (
-    file: DriveFile,
-  ) => {
-    if (file.status !== "ready")
-      return;
+  const handleOpenFile = (file: DriveFile) => {
+    if (file.status !== "ready") return;
 
     navigate(`/${file._id}`);
   };
 
-  const handleDownloadFile = async (
-    file: DriveFile,
-  ) => {
-    if (file.status !== "ready")
-      return;
+  const handleDownloadFile = async (file: DriveFile) => {
+    if (file.status !== "ready") return;
 
     try {
-      const data = await getFileUrl(
-        file._id,
-        true,
-      );
+      const data = await getFileUrl(file._id, true);
 
-      window.location.assign(
-        data.url,
-      );
+      window.location.assign(data.url);
     } catch (error) {
-      console.error(
-        "Failed to generate download URL:",
-        error,
-      );
+      console.error("Failed to generate download URL:", error);
 
       toast.add({
-        title:
-          "Unable to download file",
-        description:
-          getErrorMessage(
-            error,
-            "Please try again.",
-          ),
+        title: "Unable to download file",
+        description: getErrorMessage(error, "Please try again."),
         type: "error",
       });
     }
   };
 
   const handleHome = () => {
-    navigate(
-      `/${user.rootDirectoryId}`,
-    );
+    navigate(`/${user.rootDirectoryId}`);
   };
 
-  const handleOpenDirectory = (
-    directoryId: string,
-  ) => {
+  const handleOpenDirectory = (directoryId: string) => {
     setSearch("");
     navigate(`/${directoryId}`);
   };
@@ -1410,24 +1108,10 @@ const Home = () => {
       mobileOpen={mobileOpen}
       user={user}
       onHome={handleHome}
-      onCloseMobile={() =>
-        setMobileOpen(false)
-      }
+      onCloseMobile={() => setMobileOpen(false)}
       onSharedByMe={() => navigate("/share")}
       onSharedWithMe={() => navigate("/shared-with-me")}
-      onRecent={() =>
-        console.log(
-          "Recent API is not implemented yet.",
-        )
-      }
-      onStarred={() =>
-        console.log(
-          "Starred API is not implemented yet.",
-        )
-      }
-      onTrash={() =>
-        navigate("/trash")
-      }
+      onTrash={() => navigate("/trash")}
     />
   );
 
@@ -1440,9 +1124,7 @@ const Home = () => {
             user={user}
             search={search}
             onSearchChange={setSearch}
-            onMenuClick={() =>
-              setMobileOpen(true)
-            }
+            onMenuClick={() => setMobileOpen(true)}
           />
           <main className="px-4 pb-8 pt-20 sm:px-6">
             <div className="flex min-h-[60vh] items-center justify-center gap-2 text-sm text-slate-500">
@@ -1464,9 +1146,7 @@ const Home = () => {
             user={user}
             search={search}
             onSearchChange={setSearch}
-            onMenuClick={() =>
-              setMobileOpen(true)
-            }
+            onMenuClick={() => setMobileOpen(true)}
           />
           <main className="px-4 pb-8 pt-20 sm:px-6">
             <div className="flex min-h-[60vh] flex-col items-center justify-center text-center">
@@ -1490,8 +1170,7 @@ const Home = () => {
   }
 
   const breadcrumbs =
-    directoryData.breadcrumbs.length >
-    0
+    directoryData.breadcrumbs.length > 0
       ? directoryData.breadcrumbs
       : [
           {
@@ -1509,111 +1188,140 @@ const Home = () => {
           user={user}
           search={search}
           onSearchChange={setSearch}
-          onMenuClick={() =>
-            setMobileOpen(true)
-          }
+          onMenuClick={() => setMobileOpen(true)}
         />
 
         <main className="px-4 pb-8 pt-20 sm:px-6">
           <div className="mb-5 overflow-x-auto pb-1">
             <Breadcrumb>
               <BreadcrumbList className="flex-nowrap">
-                {breadcrumbs.map(
-                  (crumb, index) => {
-                    const current =
-                      index ===
-                      breadcrumbs.length -
-                        1;
-                    const isRootCrumb =
-                      crumb.id ===
-                      user.rootDirectoryId;
-                    const label =
-                      isRootCrumb
-                        ? "Home"
-                        : crumb.name;
+                {breadcrumbs.map((crumb, index) => {
+                  const current = index === breadcrumbs.length - 1;
+                  const isRootCrumb = crumb.id === user.rootDirectoryId;
+                  const label = isRootCrumb ? "Home" : crumb.name;
 
-                    return (
-                      <span
-                        key={crumb.id}
-                        className="contents"
-                      >
-                        <BreadcrumbItem>
-                          {current ? (
-                            <BreadcrumbPage className="max-w-60 truncate text-sm font-medium">
-                              {label}
-                            </BreadcrumbPage>
-                          ) : (
-                            <BreadcrumbLink
-                              href={`/${crumb.id}`}
-                              className="max-w-48 truncate text-sm"
-                              onClick={(event) => {
-                                event.preventDefault();
-                                navigate(
-                                  `/${crumb.id}`,
-                                );
-                              }}
-                            >
-                              {label}
-                            </BreadcrumbLink>
-                          )}
-                        </BreadcrumbItem>
-                        {!current ? (
-                          <BreadcrumbSeparator />
-                        ) : null}
-                      </span>
-                    );
-                  },
-                )}
+                  return (
+                    <span key={crumb.id} className="contents">
+                      <BreadcrumbItem>
+                        {current ? (
+                          <BreadcrumbPage className="max-w-60 truncate text-sm font-medium">
+                            {label}
+                          </BreadcrumbPage>
+                        ) : (
+                          <BreadcrumbLink
+                            href={`/${crumb.id}`}
+                            className="max-w-48 truncate text-sm"
+                            onClick={(event) => {
+                              event.preventDefault();
+                              navigate(`/${crumb.id}`);
+                            }}
+                          >
+                            {label}
+                          </BreadcrumbLink>
+                        )}
+                      </BreadcrumbItem>
+                      {!current ? <BreadcrumbSeparator /> : null}
+                    </span>
+                  );
+                })}
               </BreadcrumbList>
             </Breadcrumb>
           </div>
 
           <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-            <p className="text-sm text-slate-500">
-              {totalItems}{" "}
-              {totalItems === 1
-                ? "item"
-                : "items"}
-            </p>
+            {selectionMode ? (
+              <>
+                <div className="flex min-w-0 items-center gap-3">
+                  <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-blue-50">
+                    <ListChecks className="size-5 text-blue-600" />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-slate-900">
+                      {selectedItems.length} selected
+                    </p>
+                    <p className="text-xs text-slate-500">
+                      Choose files and folders to move to Trash.
+                    </p>
+                  </div>
+                </div>
 
-            <div className="flex items-center gap-2">
-              <input
-                ref={fileInputRef}
-                type="file"
-                multiple
-                className="hidden"
-                onChange={handleFilesSelected}
-              />
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    variant="outline"
+                    className="border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                    onClick={handleSelectAll}
+                    disabled={
+                      selectableVisibleItems.length === 0 || actionLoading
+                    }
+                  >
+                    <CheckCheck className="size-4" />
+                    {allVisibleSelectable ? "Clear visible" : "Select all"}
+                  </Button>
 
-              <Button
-                className="bg-blue-600 text-white hover:bg-blue-700"
-                onClick={() =>
-                  fileInputRef.current?.click()
-                }
-              >
-                <UploadCloud className="size-4" />
-                Upload
-              </Button>
+                  <Button
+                    variant="outline"
+                    className="border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                    onClick={exitSelectionMode}
+                    disabled={actionLoading}
+                  >
+                    <X className="size-4" />
+                    Cancel
+                  </Button>
 
-              <Button
-                variant="outline"
-                className="border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
-                onClick={() =>
-                  setCreateFolderOpen(true)
-                }
-              >
-                <Plus className="size-4 text-blue-600" />
-                New folder
-              </Button>
-            </div>
+                  <Button
+                    className="bg-red-600 text-white hover:bg-red-700"
+                    onClick={() => setBulkTrashConfirmOpen(true)}
+                    disabled={selectedItems.length === 0 || actionLoading}
+                  >
+                    <Trash2 className="size-4" />
+                    Move to trash
+                  </Button>
+                </div>
+              </>
+            ) : (
+              <>
+                <p className="text-sm text-slate-500">
+                  {totalItems} {totalItems === 1 ? "item" : "items"}
+                </p>
+
+                <div className="flex items-center gap-2">
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    multiple
+                    className="hidden"
+                    onChange={handleFilesSelected}
+                  />
+
+                  <Button
+                    className="bg-blue-600 text-white hover:bg-blue-700"
+                    onClick={() => fileInputRef.current?.click()}
+                  >
+                    <UploadCloud className="size-4" />
+                    Upload
+                  </Button>
+
+                  <Button
+                    variant="outline"
+                    className="border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                    onClick={() => setCreateFolderOpen(true)}
+                  >
+                    <Plus className="size-4 text-blue-600" />
+                    New folder
+                  </Button>
+                </div>
+              </>
+            )}
           </div>
 
           <DirectoryItemsView
             directories={directories}
             files={files}
-            onOpenDirectory={
-              handleOpenDirectory
-            }
+            selectionMode={selectionMode}
+            selectedItems={selectedItems}
+            onEnterSelectionMode={enterSelectionMode}
+            onToggleSelection={toggleSelectedItem}
+            onOpenDirectory={handleOpenDirectory}
             onOpenFile={handleOpenFile}
             onDirectoryDetails={(directory) => {
               setDetailsTarget({
@@ -1628,18 +1336,11 @@ const Home = () => {
               );
             }}
             onDirectoryShare={(directory) =>
-              navigateToShare(
-                "directory",
-                directory,
-              )
+              navigateToShare("directory", directory)
             }
             onDirectoryRename={(directory) => {
-              setRenameDirectoryTarget(
-                directory,
-              );
-              setRenameDirectoryName(
-                directory.name,
-              );
+              setRenameDirectoryTarget(directory);
+              setRenameDirectoryName(directory.name);
             }}
             onDirectoryDelete={(directory) =>
               setDeleteTarget({
@@ -1653,20 +1354,11 @@ const Home = () => {
                 item: file,
               });
             }}
-            onFileDownload={
-              handleDownloadFile
-            }
-            onFileShare={(file) =>
-              navigateToShare(
-                "file",
-                file,
-              )
-            }
+            onFileDownload={handleDownloadFile}
+            onFileShare={(file) => navigateToShare("file", file)}
             onFileRename={(file) => {
               setRenameFileTarget(file);
-              setRenameFileName(
-                file.name,
-              );
+              setRenameFileName(file.name);
             }}
             onFileDelete={(file) =>
               setDeleteTarget({
@@ -1687,11 +1379,11 @@ const Home = () => {
 
       <ShareDialog
         open={shareTarget !== null}
-        onOpenChange={(open : any) => {
+        onOpenChange={(open: boolean) => {
           if (!open) setShareTarget(null);
         }}
         target={shareTarget}
-        onSaved={(share : any) => {
+        onSaved={(share: ShareLink) => {
           dispatch(upsertMyShare(share));
         }}
       />
@@ -1706,9 +1398,7 @@ const Home = () => {
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>
-              Create folder
-            </DialogTitle>
+            <DialogTitle>Create folder</DialogTitle>
             <DialogDescription>
               Create a new folder inside the current directory.
             </DialogDescription>
@@ -1716,11 +1406,7 @@ const Home = () => {
 
           <Input
             value={newFolderName}
-            onChange={(event) =>
-              setNewFolderName(
-                event.target.value,
-              )
-            }
+            onChange={(event) => setNewFolderName(event.target.value)}
             placeholder="Folder name"
             maxLength={255}
             autoFocus
@@ -1736,50 +1422,33 @@ const Home = () => {
             <Button
               variant="outline"
               disabled={actionLoading}
-              onClick={() =>
-                setCreateFolderOpen(false)
-              }
+              onClick={() => setCreateFolderOpen(false)}
             >
               Cancel
             </Button>
             <Button
               className="bg-blue-600 hover:bg-blue-700"
-              disabled={
-                actionLoading ||
-                newFolderName.trim().length ===
-                  0
-              }
-              onClick={() =>
-                void handleCreateFolder()
-              }
+              disabled={actionLoading || newFolderName.trim().length === 0}
+              onClick={() => void handleCreateFolder()}
             >
-              {actionLoading
-                ? "Creating..."
-                : "Create folder"}
+              {actionLoading ? "Creating..." : "Create folder"}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
       <Dialog
-        open={
-          renameDirectoryTarget !==
-          null
-        }
+        open={renameDirectoryTarget !== null}
         onOpenChange={(open) => {
           if (!open && !actionLoading) {
-            setRenameDirectoryTarget(
-              null,
-            );
+            setRenameDirectoryTarget(null);
             setRenameDirectoryName("");
           }
         }}
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>
-              Rename folder
-            </DialogTitle>
+            <DialogTitle>Rename folder</DialogTitle>
             <DialogDescription>
               Choose a new name for this folder.
             </DialogDescription>
@@ -1787,11 +1456,7 @@ const Home = () => {
 
           <Input
             value={renameDirectoryName}
-            onChange={(event) =>
-              setRenameDirectoryName(
-                event.target.value,
-              )
-            }
+            onChange={(event) => setRenameDirectoryName(event.target.value)}
             placeholder="Folder name"
             maxLength={255}
             autoFocus
@@ -1807,26 +1472,18 @@ const Home = () => {
             <Button
               variant="outline"
               disabled={actionLoading}
-              onClick={() =>
-                setRenameDirectoryTarget(null)
-              }
+              onClick={() => setRenameDirectoryTarget(null)}
             >
               Cancel
             </Button>
             <Button
               className="bg-blue-600 hover:bg-blue-700"
               disabled={
-                actionLoading ||
-                renameDirectoryName.trim().length ===
-                  0
+                actionLoading || renameDirectoryName.trim().length === 0
               }
-              onClick={() =>
-                void handleRenameDirectory()
-              }
+              onClick={() => void handleRenameDirectory()}
             >
-              {actionLoading
-                ? "Saving..."
-                : "Save changes"}
+              {actionLoading ? "Saving..." : "Save changes"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1843,21 +1500,16 @@ const Home = () => {
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>
-              Rename file
-            </DialogTitle>
+            <DialogTitle>Rename file</DialogTitle>
             <DialogDescription>
-              Choose a new name for this file. The stored object key will remain unchanged.
+              Choose a new name for this file. The stored object key will remain
+              unchanged.
             </DialogDescription>
           </DialogHeader>
 
           <Input
             value={renameFileName}
-            onChange={(event) =>
-              setRenameFileName(
-                event.target.value,
-              )
-            }
+            onChange={(event) => setRenameFileName(event.target.value)}
             placeholder="File name"
             maxLength={255}
             autoFocus
@@ -1873,26 +1525,16 @@ const Home = () => {
             <Button
               variant="outline"
               disabled={actionLoading}
-              onClick={() =>
-                setRenameFileTarget(null)
-              }
+              onClick={() => setRenameFileTarget(null)}
             >
               Cancel
             </Button>
             <Button
               className="bg-blue-600 hover:bg-blue-700"
-              disabled={
-                actionLoading ||
-                renameFileName.trim().length ===
-                  0
-              }
-              onClick={() =>
-                void handleRenameFile()
-              }
+              disabled={actionLoading || renameFileName.trim().length === 0}
+              onClick={() => void handleRenameFile()}
             >
-              {actionLoading
-                ? "Saving..."
-                : "Save changes"}
+              {actionLoading ? "Saving..." : "Save changes"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -1914,7 +1556,8 @@ const Home = () => {
                 : "File details"}
             </DialogTitle>
             <DialogDescription>
-              Metadata for the selected {detailsTarget?.type === "directory" ? "folder" : "file"}.
+              Metadata for the selected{" "}
+              {detailsTarget?.type === "directory" ? "folder" : "file"}.
             </DialogDescription>
           </DialogHeader>
 
@@ -2012,6 +1655,39 @@ const Home = () => {
       </Dialog>
 
       <AlertDialog
+        open={bulkTrashConfirmOpen}
+        onOpenChange={(open) => {
+          if (!open && !actionLoading) {
+            setBulkTrashConfirmOpen(false);
+          }
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Move selected items to trash?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {selectedItems.some((item) => item.type === "directory")
+                ? "Selected folders and files will be moved to Trash. Everything inside a selected folder is included automatically."
+                : "The selected files will be moved to Trash. You can restore them later."}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={actionLoading}>
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              disabled={actionLoading || selectedItems.length === 0}
+              onClick={() => void handleBulkTrash()}
+              className="bg-red-600 hover:bg-red-700"
+            >
+              {actionLoading ? "Moving..." : "Move to trash"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
         open={deleteTarget !== null}
         onOpenChange={(open) => {
           if (!open && !actionLoading) {
@@ -2021,30 +1697,23 @@ const Home = () => {
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>
-              Move to trash?
-            </AlertDialogTitle>
+            <AlertDialogTitle>Move to trash?</AlertDialogTitle>
             <AlertDialogDescription>
-              "{deleteTarget?.item.name}" will be moved to Trash. Storage usage will not change until the item is permanently deleted.
+              "{deleteTarget?.item.name}" will be moved to Trash. Storage usage
+              will not change until the item is permanently deleted.
             </AlertDialogDescription>
           </AlertDialogHeader>
 
           <AlertDialogFooter>
-            <AlertDialogCancel
-              disabled={actionLoading}
-            >
+            <AlertDialogCancel disabled={actionLoading}>
               Cancel
             </AlertDialogCancel>
             <AlertDialogAction
               disabled={actionLoading}
-              onClick={() =>
-                void handleDelete()
-              }
+              onClick={() => void handleDelete()}
               className="bg-blue-600 hover:bg-blue-700"
             >
-              {actionLoading
-                ? "Moving..."
-                : "Move to trash"}
+              {actionLoading ? "Moving..." : "Move to trash"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

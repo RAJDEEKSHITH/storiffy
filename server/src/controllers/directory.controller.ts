@@ -14,6 +14,8 @@ import {
   restoreDirectory,
   softDeleteDirectory,
 } from "../services/directory/directory.service.js";
+import { AppError } from "../utils/app.error.js";
+import { bulkMoveItemsToTrash } from "../services/trash/trash.service.js";
 
 // get directory (folders,files,breadcrumbs)
 export const getDirectory = async (
@@ -159,6 +161,54 @@ export const moveDirectoryToTrash =
       next(error);
     }
   };
+
+// Add this controller export to directory.controller.ts:
+export const bulkMoveItemsToTrashController = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const { directories, files } = req.body ?? {};
+
+    const isStringArray = (
+      value: unknown,
+    ): value is string[] =>
+      Array.isArray(value) &&
+      value.every(
+        (item) =>
+          typeof item === "string" &&
+          item.trim().length > 0,
+      );
+
+    if (
+      !isStringArray(directories) ||
+      !isStringArray(files)
+    ) {
+      throw new AppError(
+        "directories and files must both be arrays of IDs",
+        400,
+      );
+    }
+
+    const data =
+      await bulkMoveItemsToTrash({
+        userId:
+          req.user._id.toString(),
+        directoryIds: directories,
+        fileIds: files,
+      });
+
+    return res.status(200).json({
+      success: true,
+      message:
+        "Selected items moved to trash successfully",
+      data,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
 
 
 // get trash items

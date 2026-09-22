@@ -56,7 +56,6 @@ router.get(
   lookupShareRecipientController,
 );
 
-/* Static routes must be before /:id. */
 router.get("/mine", listMySharesController);
 router.get("/shared-with-me", listSharesWithMeController);
 

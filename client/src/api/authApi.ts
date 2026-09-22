@@ -69,3 +69,7 @@ export const getCurrentUser = async (): Promise<User> => {
 export const logoutUser = async (): Promise<void> => {
   await axios.post("/auth/logout");
 };
+
+export const logoutAllUsers = async (): Promise<void> => {
+  await axios.post("/auth/logout-all");
+};

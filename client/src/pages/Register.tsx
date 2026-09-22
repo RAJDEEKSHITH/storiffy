@@ -75,7 +75,7 @@ const Register = () => {
             Create your account
           </CardTitle>
           <CardDescription>
-            Get started with OmniSpace
+            Get started with Storiffy
           </CardDescription>
         </CardHeader>
 

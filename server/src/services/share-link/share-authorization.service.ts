@@ -280,10 +280,6 @@ export const assertSharedRootIsNotTarget = ({
   }
 };
 
-/*
- * Validate an in-progress upload created by the authenticated editor.
- * Uploading files are intentionally not handled by the ready-file helper.
- */
 export const assertSharedUploadTarget = async ({
   share,
   actorId,

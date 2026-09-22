@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components */
 import { HardDrive } from "lucide-react";
 import { useSelector } from "react-redux";
 
@@ -75,3 +76,4 @@ const StorageUsage = ({ className }: StorageUsageProps) => {
 };
 
 export default StorageUsage;
+/* eslint-enable react-refresh/only-export-components */

@@ -1,3 +1,4 @@
+/* eslint-disable preserve-caught-error */
 import axios from "axios";
 import api from "./axios";
 import type {

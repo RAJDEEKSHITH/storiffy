@@ -134,15 +134,15 @@ const Trash = () => {
     },
     [],
   );
-
-  useEffect(() => {
-    void loadTrash();
-  }, [loadTrash]);
+/* eslint-disable react-hooks/set-state-in-effect */
+useEffect(() => {
+  void loadTrash();
+}, [loadTrash]);
+/* eslint-enable react-hooks/set-state-in-effect */
 
   if (!user) {
     return null;
   }
-
   const handleHome = () => {
     navigate(
       `/${user.rootDirectoryId}`,
@@ -351,16 +351,6 @@ const Trash = () => {
         onSharedWithMe={() =>
           console.log(
             "Shared with me API is not implemented yet.",
-          )
-        }
-        onRecent={() =>
-          console.log(
-            "Recent API is not implemented yet.",
-          )
-        }
-        onStarred={() =>
-          console.log(
-            "Starred API is not implemented yet.",
           )
         }
         onTrash={() =>

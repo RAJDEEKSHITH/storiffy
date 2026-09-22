@@ -9,14 +9,6 @@ import { abortMultipartUpload, deleteS3Objects } from "../aws/s3.service.js";
 
 const toMongooseObjectId = (id: string) => new mongoose.Types.ObjectId(id);
 
-/*
-|--------------------------------------------------------------------------
-| Get all descendants of a directory
-|--------------------------------------------------------------------------
-|
-| Includes the root directory itself.
-|--------------------------------------------------------------------------
-*/
 
 const getDirectoryTreeIds = async (
   userId: string,
@@ -60,21 +52,6 @@ const getDirectoryTreeIds = async (
   return allIds;
 };
 
-/*
-|--------------------------------------------------------------------------
-| Get top-level trash root
-|--------------------------------------------------------------------------
-|
-| Example:
-|
-| Projects       <- trash root
-|   React
-|     App
-|
-| If user tries to restore React or App,
-| this helper returns Projects.
-|--------------------------------------------------------------------------
-*/
 
 const getTrashRootDirectory = async ({
   userId,
@@ -108,11 +85,6 @@ const getTrashRootDirectory = async ({
   return current;
 };
 
-/*
-|--------------------------------------------------------------------------
-| Ensure parent directory exists
-|--------------------------------------------------------------------------
-*/
 
 const ensureParentDirectory = async (
   userId: string,
@@ -133,11 +105,6 @@ const ensureParentDirectory = async (
   return directory;
 };
 
-/*
-|--------------------------------------------------------------------------
-| Make unique directory name
-|--------------------------------------------------------------------------
-*/
 
 const makeUniqueDirectoryName = async (
   userId: string,
@@ -183,11 +150,6 @@ const makeUniqueDirectoryName = async (
   return `New folder (${index})`;
 };
 
-/*
-|--------------------------------------------------------------------------
-| Create Directory
-|--------------------------------------------------------------------------
-*/
 
 export const createDirectory = async (
   userId: string,
@@ -213,11 +175,6 @@ export const createDirectory = async (
   });
 };
 
-/*
-|--------------------------------------------------------------------------
-| Breadcrumbs
-|--------------------------------------------------------------------------
-*/
 
 export const getBreadcrumbs = async ({
   userId,
@@ -261,11 +218,6 @@ export const getBreadcrumbs = async ({
   return breadcrumbs;
 };
 
-/*
-|--------------------------------------------------------------------------
-| Get Directory Contents
-|--------------------------------------------------------------------------
-*/
 
 export const getDirectoryItems = async (
   userId: string,
@@ -319,11 +271,6 @@ export const getDirectoryItems = async (
   };
 };
 
-/*
-|--------------------------------------------------------------------------
-| Rename Directory
-|--------------------------------------------------------------------------
-*/
 
 export const renameDirectory = async (
   userId: string,
@@ -367,16 +314,6 @@ export const renameDirectory = async (
   return directory;
 };
 
-/*
-|--------------------------------------------------------------------------
-| Move Directory To Trash
-|--------------------------------------------------------------------------
-|
-| Entire directory tree is moved to trash.
-|
-| User storage DOES NOT decrease.
-|--------------------------------------------------------------------------
-*/
 
 export const softDeleteDirectory = async ({
   userId,
@@ -401,10 +338,6 @@ export const softDeleteDirectory = async ({
 
   const directoryIds = await getDirectoryTreeIds(userId, directory._id);
 
-  /*
-   * Do not allow moving a directory to trash
-   * while anything inside it is uploading.
-   */
   const activeUpload = await File.findOne({
     userId,
     directoryId: {
@@ -472,14 +405,6 @@ export const softDeleteDirectory = async ({
   };
 };
 
-/*
-|--------------------------------------------------------------------------
-| Get Directory Trash
-|--------------------------------------------------------------------------
-|
-| Only top-level trashed directories are returned.
-|--------------------------------------------------------------------------
-*/
 
 export const getTrashedDirectories = async (userId: string) => {
   const directories = await Directory.find({
@@ -506,19 +431,6 @@ export const getTrashedDirectories = async (userId: string) => {
   });
 };
 
-/*
-|--------------------------------------------------------------------------
-| Restore Directory
-|--------------------------------------------------------------------------
-|
-| IMPORTANT:
-|
-| Only the top-level trashed directory can
-| be restored.
-|
-| Restoring it restores the complete tree.
-|--------------------------------------------------------------------------
-*/
 
 export const restoreDirectory = async ({
   userId,
@@ -539,9 +451,6 @@ export const restoreDirectory = async ({
     throw new AppError("Trashed directory not found", 404);
   }
 
-  /*
-   * Find the top-most deleted ancestor.
-   */
   const trashRoot = await getTrashRootDirectory({
     userId,
     directory,
@@ -551,9 +460,6 @@ export const restoreDirectory = async ({
     throw new AppError("Restore the top-level trashed directory instead", 409);
   }
 
-  /*
-   * The directory's parent must be active.
-   */
   if (directory.parentDirectoryId) {
     const parent = await Directory.findOne({
       _id: directory.parentDirectoryId,
@@ -577,10 +483,6 @@ export const restoreDirectory = async ({
     userId,
   }).lean();
 
-  /*
-   * Prevent name conflicts with active
-   * directories.
-   */
   for (const item of directories) {
     const duplicate = await Directory.findOne({
       _id: {
@@ -606,9 +508,6 @@ export const restoreDirectory = async ({
 
   try {
     await session.withTransaction(async () => {
-      /*
-       * Restore entire directory tree.
-       */
       await Directory.updateMany(
         {
           _id: {
@@ -629,9 +528,6 @@ export const restoreDirectory = async ({
         },
       );
 
-      /*
-       * Restore every file in the tree.
-       */
       await File.updateMany(
         {
           userId,
@@ -653,12 +549,6 @@ export const restoreDirectory = async ({
         },
       );
 
-      /*
-       * Recalculate direct-file size for every
-       * restored directory.
-       *
-       * User storage is NOT changed.
-       */
       const sizes = await File.aggregate([
         {
           $match: {
@@ -686,9 +576,6 @@ export const restoreDirectory = async ({
         sizeMap.set(item._id.toString(), item.totalSize);
       }
 
-      /*
-       * Reset all restored directory sizes.
-       */
       await Directory.updateMany(
         {
           _id: {
@@ -706,9 +593,6 @@ export const restoreDirectory = async ({
         },
       );
 
-      /*
-       * Apply recalculated direct-file sizes.
-       */
       for (const [id, size] of sizeMap) {
         await Directory.updateOne(
           {
@@ -733,20 +617,6 @@ export const restoreDirectory = async ({
   return Directory.findById(directory._id).lean();
 };
 
-/*
-|--------------------------------------------------------------------------
-| Permanently Delete Directory
-|--------------------------------------------------------------------------
-|
-| Only the top-level trashed directory can be
-| permanently deleted.
-|
-| Entire tree is deleted.
-|
-| User storage decreases by the sum of all
-| ready files inside the tree.
-|--------------------------------------------------------------------------
-*/
 
 export const permanentlyDeleteDirectory = async ({
   userId,
@@ -771,9 +641,6 @@ export const permanentlyDeleteDirectory = async ({
     throw new AppError("Home folder cannot be permanently deleted", 400);
   }
 
-  /*
-   * Only delete the top-level trash item.
-   */
   const trashRoot = await getTrashRootDirectory({
     userId,
     directory,
@@ -795,11 +662,6 @@ export const permanentlyDeleteDirectory = async ({
     },
   }).lean();
 
-  /*
-   * There should not be active uploads inside
-   * a trashed directory because directory trash
-   * rejects uploads.
-   */
   const uploadingFile = files.find((file) => file.status === "uploading");
 
   if (uploadingFile) {
@@ -809,9 +671,6 @@ export const permanentlyDeleteDirectory = async ({
     );
   }
 
-  /*
-   * Clean any stale multipart uploads.
-   */
   for (const file of files) {
     if (file.uploadId) {
       try {
@@ -829,9 +688,6 @@ export const permanentlyDeleteDirectory = async ({
 
   const storageKeys = files.map((file) => file.storageKey);
 
-  /*
-   * Delete all S3 objects.
-   */
   if (storageKeys.length > 0) {
     const response = await deleteS3Objects(storageKeys);
 
@@ -842,10 +698,6 @@ export const permanentlyDeleteDirectory = async ({
     }
   }
 
-  /*
-   * Only ready files consume the user's
-   * permanent storage reservation.
-   */
   const storageToFree = files.reduce(
     (total, file) => (file.status === "ready" ? total + file.size : total),
     0,
@@ -906,11 +758,6 @@ export const permanentlyDeleteDirectory = async ({
   };
 };
 
-/*
-|--------------------------------------------------------------------------
-| Shared directory scope helpers
-|--------------------------------------------------------------------------
-*/
 
 const SHARED_DIRECTORY_MAX_DEPTH = 1000;
 
@@ -1074,12 +921,6 @@ export const getSharedDirectoryItems = async ({
     throw new AppError("Directory not found", 404);
   }
 
-  /*
-   * Build breadcrumbs from the current directory back to the
-   * shared root only.
-   *
-   * This prevents exposing folders above the shared root.
-   */
   const breadcrumbs: Array<{
     id: string;
     name: string;
@@ -1124,20 +965,12 @@ export const getSharedDirectoryItems = async ({
     current = parent;
   }
 
-  /*
-   * The requested directory must actually terminate at the
-   * shared root.
-   */
   const firstBreadcrumb = breadcrumbs[0];
 
   if (!firstBreadcrumb || firstBreadcrumb.id !== sharedRootDirectoryId) {
     throw new AppError("Directory is outside the shared directory", 404);
   }
 
-  /*
-   * IMPORTANT:
-   * Use currentDirectory._id here, NOT sharedRootDirectoryId.
-   */
   const [directories, files] = await Promise.all([
     Directory.find({
       parentDirectoryId: currentDirectory._id,

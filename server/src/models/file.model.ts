@@ -116,7 +116,6 @@ const fileSchema = new Schema<FileI>(
   },
 );
 
-/* Owner directory listing. */
 fileSchema.index({
   userId: 1,
   directoryId: 1,
@@ -124,7 +123,6 @@ fileSchema.index({
   updatedAt: -1,
 });
 
-/* Shared-editor authorization/deletion queries. */
 fileSchema.index({
   userId: 1,
   createdBy: 1,
@@ -132,7 +130,6 @@ fileSchema.index({
   deletedAt: 1,
 });
 
-/* Background abandoned-upload cleanup. */
 fileSchema.index({
   status: 1,
   uploadExpiresAt: 1,

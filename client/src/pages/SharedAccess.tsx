@@ -236,14 +236,19 @@ const SharedAccess = ({ accessType }: SharedAccessProps) => {
     }
   }, [isCheckingAuth, isRestricted, splat, token, user]);
 
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     void loadPage();
   }, [loadPage, splat]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   useEffect(() => {
+    const uploadControllers = uploadControllersRef.current;
+    const removalTimers = removalTimersRef.current;
+
     return () => {
-      uploadControllersRef.current.forEach((controller) => controller.abort());
-      removalTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+      uploadControllers.forEach((controller) => controller.abort());
+      removalTimers.forEach((timer) => window.clearTimeout(timer));
     };
   }, []);
 
@@ -625,9 +630,6 @@ const SharedAccess = ({ accessType }: SharedAccessProps) => {
     await startUploadItems([retryItem]);
   };
 
-  const isRootShare = Boolean(
-    share && share.resourceId === directoryData?.directory._id,
-  );
   const breadcrumbs: SharedBreadcrumb[] = directoryData?.breadcrumbs ?? [];
   const allDirectories = directoryData?.directories ?? [];
   const allFiles = directoryData?.files ?? [];
@@ -725,7 +727,7 @@ const SharedAccess = ({ accessType }: SharedAccessProps) => {
             Sign in to continue
           </h1>
           <p className="mt-2 text-sm leading-6 text-slate-500">
-            This is a restricted OmniSpace link. Sign in with the account the
+            This is a restricted Storiffy link. Sign in with the account the
             owner shared it with.
           </p>
           <div className="mt-6 flex flex-col gap-2 sm:flex-row">
@@ -785,7 +787,7 @@ const SharedAccess = ({ accessType }: SharedAccessProps) => {
               className="mt-6 bg-blue-600 hover:bg-blue-700"
               onClick={() => navigate(`/${user.rootDirectoryId}`)}
             >
-              Back to OmniSpace
+              Back to Storiffy
             </Button>
           ) : null}
         </div>
@@ -866,8 +868,6 @@ const SharedAccess = ({ accessType }: SharedAccessProps) => {
           onCloseMobile={() => setMobileOpen(false)}
           onSharedByMe={() => navigate("/share")}
           onSharedWithMe={() => navigate("/shared-with-me")}
-          onRecent={() => undefined}
-          onStarred={() => undefined}
           onTrash={() => navigate("/trash")}
         />
         <div className="min-h-screen lg:ml-64">

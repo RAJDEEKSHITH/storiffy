@@ -3,10 +3,13 @@ import {
   Ellipsis,
   FilePenLine,
   Info,
+  MousePointer2,
   Share2,
   Trash2,
 } from "lucide-react";
+
 import { Button } from "./ui/button";
+
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -21,6 +24,8 @@ interface DriveItemActionsProps {
   onShare: () => void;
   onRename: () => void;
   onDelete: () => void;
+  onSelect: () => void;
+
   downloadDisabled?: boolean;
 }
 
@@ -30,6 +35,7 @@ const DriveItemActions = ({
   onShare,
   onRename,
   onDelete,
+  onSelect,
   downloadDisabled = false,
 }: DriveItemActionsProps) => {
   return (
@@ -52,6 +58,13 @@ const DriveItemActions = ({
         sideOffset={6}
         className="w-48"
       >
+        <DropdownMenuItem onClick={onSelect}>
+          <MousePointer2 className="size-4" />
+          Select
+        </DropdownMenuItem>
+
+        <DropdownMenuSeparator />
+
         <DropdownMenuItem onClick={onDetails}>
           <Info className="size-4" />
           Details

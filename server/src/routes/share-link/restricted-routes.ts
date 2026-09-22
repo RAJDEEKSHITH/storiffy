@@ -66,7 +66,6 @@ router.get(
   downloadRestrictedFileController,
 );
 
-/* Editor: file mutations. */
 router.patch(
   "/:token/files/:fileId",
   shareRateLimit,
@@ -82,7 +81,6 @@ router.delete(
   deleteRestrictedFileController,
 );
 
-/* Editor: directory mutations. */
 router.patch(
   "/:token/directories/:directoryId",
   shareRateLimit,
@@ -106,7 +104,6 @@ router.post(
   createRestrictedDirectoryController,
 );
 
-/* Editor: upload flow. */
 router.post(
   "/:token/files/upload/initiate",
   shareRateLimit,

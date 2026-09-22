@@ -7,6 +7,7 @@ import {
 } from "../services/auth/auth.service.js";
 
 import {
+  deleteAllSessionsForUser,
   deleteSession,
   SESSION_TTL_MS,
 } from "../services/auth/session.service.js";
@@ -107,6 +108,28 @@ export const logoutUser = async (
     return res.status(200).json({
       success: true,
       message: "Signed out",
+      data: {},
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const logoutAllUsers = async (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => {
+  try {
+    const userId = req.user._id.toString();
+
+    await deleteAllSessionsForUser(userId);
+
+    res.clearCookie("sessionId");
+
+    return res.status(200).json({
+      success: true,
+      message: "Signed out on all devices",
       data: {},
     });
   } catch (error) {

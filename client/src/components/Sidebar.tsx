@@ -1,9 +1,7 @@
 import {
-  Clock3,
   HardDrive,
   Home as HomeIcon,
   Share2,
-  Star,
   Trash2,
   Users,
   X,
@@ -20,8 +18,6 @@ interface SidebarProps {
   onHome: () => void;
   onCloseMobile: () => void;
   onSharedWithMe: () => void;
-  onRecent: () => void;
-  onStarred: () => void;
   onTrash: () => void;
   onSharedByMe?: () => void;
   activeSharedByMe?: boolean;
@@ -35,8 +31,6 @@ const Sidebar = ({
   onHome,
   onCloseMobile,
   onSharedWithMe,
-  onRecent,
-  onStarred,
   onTrash,
   onSharedByMe = () => undefined,
   activeSharedByMe = false,
@@ -68,7 +62,7 @@ const Sidebar = ({
             <span className="flex size-9 items-center justify-center rounded-lg bg-blue-600 text-white shadow-sm">
               <HardDrive className="size-5" />
             </span>
-            <span className="text-base font-semibold tracking-tight text-slate-900">OmniSpace</span>
+            <span className="text-base font-semibold tracking-tight text-slate-900">Storiffy</span>
           </button>
 
           <Button variant="ghost" size="icon" className="lg:hidden" onClick={onCloseMobile} aria-label="Close menu">
@@ -110,17 +104,6 @@ const Sidebar = ({
               <Users className="size-4" />
               Shared with me
             </Button>
-
-            {/* <Button variant="ghost" className="w-full justify-start gap-3 text-slate-600 hover:bg-slate-50 hover:text-slate-900" onClick={() => handleNavigation(onRecent)}>
-              <Clock3 className="size-4" />
-              Recent
-            </Button>
-
-            <Button variant="ghost" className="w-full justify-start gap-3 text-slate-600 hover:bg-slate-50 hover:text-slate-900" onClick={() => handleNavigation(onStarred)}>
-              <Star className="size-4" />
-              Starred
-            </Button> */}
-
             <Button
               variant="ghost"
               className={`w-full justify-start gap-3 ${

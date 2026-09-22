@@ -73,7 +73,7 @@ const Login = () => {
             Welcome back
           </CardTitle>
           <CardDescription>
-            Sign in to your OmniSpace account
+            Sign in to your Storiffy account
           </CardDescription>
         </CardHeader>
 

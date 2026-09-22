@@ -152,9 +152,5 @@ export const startUploadMaintenanceWorker = () => {
     CLEANUP_INTERVAL_MS,
   );
 
-  /*
-   * The HTTP server itself keeps the Node process alive. The interval does
-   * not need to be the reason the process remains alive during shutdown/tests.
-   */
   timer.unref();
 };

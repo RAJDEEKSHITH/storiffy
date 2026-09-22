@@ -181,8 +181,6 @@ const Share = () => {
         onCloseMobile={() => setMobileOpen(false)}
         onSharedByMe={() => navigate("/share")}
         onSharedWithMe={() => navigate("/shared-with-me")}
-        onRecent={() => undefined}
-        onStarred={() => undefined}
         onTrash={() => navigate("/trash")}
       />
 
@@ -341,7 +339,7 @@ const Share = () => {
           <AlertDialogHeader>
             <AlertDialogTitle>Revoke this share link?</AlertDialogTitle>
             <AlertDialogDescription>
-              Anyone using this URL will lose access immediately at the OmniSpace application layer. This cannot be undone.
+              Anyone using this URL will lose access immediately at the Storiffy application layer. This cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
